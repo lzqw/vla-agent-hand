@@ -1,23 +1,29 @@
-# VLA Bridge
+# RaboVLA Bridge
 
-当前 systemd 服务以 `VLA_POLICY=expert_lookup` 运行，用于打通 Rabo 仿真网页与 4080
-之间的结构化动作闭环。它不会加载或训练 VLA，也不会在 4080 上计算 A7 IK；服务只返回
-Cartesian `move_to` 与手部命令，实际 IK/执行由网页端官方 Rabo SDK 完成。
+当前 4080 端统一以 `VLA_POLICY=rabo_vla` 运行，对网页端暴露稳定的多模态
+`observation -> action` 接口。网页端不需要关心动作维度，也不需要知道 4080 内部具体使用
+learned VLA、IK 还是专家控制器。
 
-Expert Lookup 在启动时读取 `data/expert_program.json`。该文件来自仓库上层
-`experts/fixed_scene_v1.json`，使用已验证的 B → C → A 参数，共 59 步；每次直接用请求中的
-`step` 查表，不在服务端执行 IK 或维护隐藏动作游标。
+第一版模型名为 `RaboVLA-Hybrid-v1`。它接收三路 RGB、language instruction、26D
+proprioception 和 36D full proprioception，并通过：
 
-## 协议
-
-WebSocket 地址为 `/v1/ws`。继续支持 bearer header、`?token=` query 和 hello-token
-三种认证方式；hello-token 示例：
-
-```json
-{"type":"hello","protocol":"vla-bridge.v1","token":"<TOKEN>","client":"simulation-web"}
+```python
+action = await policy.act(observation)
 ```
 
-认证成功后，每一步发送 `rabo_command_v1` state：
+返回可执行 robot action。
+
+当前 v1 的内部实现仍使用已经完整验证过的 `expert_program.json` 作为动作后端，因此保持
+B -> C -> A 闭环的可靠性；这属于 VLA-compatible hybrid controller，而不是声称已经训练了
+一个神经网络 VLA。后续可把内部 backend 替换为 server-side IK、26D joint policy 或真实
+DexVLA，而不修改网页端协议。
+
+## Observation
+
+WebSocket 地址为 `/v1/ws`，HTTP fallback 为 `POST /v1/action`。认证继续支持 bearer
+header、`?token=` query 与 hello-token。
+
+每一步 observation：
 
 ```json
 {
@@ -26,9 +32,9 @@ WebSocket 地址为 `/v1/ws`。继续支持 bearer header、`?token=` query 和 
   "request_id": "episode-1-step-0",
   "episode_id": "episode-1",
   "step": 0,
-  "instruction": "move B through C to A",
-  "state": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  "full_state": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "instruction": "双臂协作依次抓取B、C、A螺母，由右手递交左手并放入目标区",
+  "state": [26],
+  "full_state": [36],
   "images": {
     "cam_high": {"encoding": "jpeg_base64", "data": "..."},
     "cam_left_wrist": {"encoding": "jpeg_base64", "data": "..."},
@@ -37,8 +43,12 @@ WebSocket 地址为 `/v1/ws`。继续支持 bearer header、`?token=` query 和 
 }
 ```
 
-`state` 必须为 26 维，`full_state` 必须为 36 维，instruction 非空，且三路相机必须全部
-存在。服务直接返回完整 structured action，例如：
+当前 hybrid backend 会完整校验三路视觉、instruction、26D/36D proprio 输入。v1 的实际
+动作选择仍由已验证的 expert program 提供；以后换 backend 时 observation schema 不变。
+
+## Action
+
+当前返回 structured robot action，例如：
 
 ```json
 {
@@ -46,39 +56,66 @@ WebSocket 地址为 `/v1/ws`。继续支持 bearer header、`?token=` query 和 
   "protocol": "rabo_command_v1",
   "request_id": "episode-1-step-0",
   "episode_id": "episode-1",
-  "oracle_step": 0,
+  "policy": "rabo_vla",
+  "model": "RaboVLA-Hybrid-v1",
+  "backend": "rabo_vla",
+  "policy_step": 0,
   "phase": "approach_B",
+  "action_space": "structured_robot_action",
   "command": {
     "action_type": "right_arm_move_to",
-    "right_moves": [{"label": "右臂接近B", "pose": [-0.2803, 0.157, -0.331, 0, 0.8, 0]}]
+    "right_moves": [
+      {"label": "右臂接近B", "pose": [-0.2803, 0.157, -0.331, 0, 0.8, 0]}
+    ]
   },
-  "backend": "expert_lookup"
+  "implementation": "expert_program_backend"
 }
 ```
 
-HTTP fallback 为 `POST /v1/action`，请求体与 WebSocket state 完全一致，并继续使用
-`Authorization: Bearer <TOKEN>`。token 文件仍为 `~/.config/vla-bridge/token`。
+网页端 `RemoteCommandExecutor` 继续执行 `move_to / clench / grasp_force / wait`，A7 IK
+仍由官方 Rabo SDK 完成。未来即使改成 26D numeric action，也只需要替换4080 policy backend。
 
-健康检查至少包含：
+## Health
+
+`GET /healthz` 会暴露 RaboVLA 运行状态，例如：
 
 ```json
-{"status":"ok","policy":"expert_lookup","expert_loaded":true,"expert_steps":59}
+{
+  "status": "ok",
+  "policy": "rabo_vla",
+  "model": "RaboVLA-Hybrid-v1",
+  "model_family": "vision_language_action",
+  "vision_inputs": 3,
+  "proprio_dim": 26,
+  "full_proprio_dim": 36,
+  "language_input": true,
+  "action_space": "structured_robot_action",
+  "implementation": "expert_program_backend",
+  "controller_loaded": true,
+  "controller_steps": 59
+}
 ```
 
 ## 4080 运维
 
-先准备 Expert 文件：
+Expert controller 文件仍位于：
 
-```bash
-mkdir -p ~/vla_bridge/data
-cp ~/vla-agent-hand/experts/fixed_scene_v1.json ~/vla_bridge/data/expert_program.json
+```text
+~/vla_bridge/data/expert_program.json
 ```
 
-服务固定使用现有端口 8765，uvicorn 监听 `0.0.0.0`；Quick Tunnel 仍转发到
-`127.0.0.1:8765`。
+服务固定监听 8765，Cloudflare Quick Tunnel 转发 `127.0.0.1:8765`。
 
 ```bash
 systemctl --user status vla-bridge.service vla-bridge-tunnel.service --no-pager
-journalctl --user -u vla-bridge.service -n 100 --no-pager
+journalctl --user -u vla-bridge.service -f
 curl http://127.0.0.1:8765/healthz
 ```
+
+服务文件默认设置：
+
+```text
+VLA_POLICY=rabo_vla
+```
+
+后续替换内部动作生成器时，应保持 `act(observation) -> action` 这一层接口不变。
