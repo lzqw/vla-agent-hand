@@ -1,0 +1,1001 @@
+{
+  "format": "rabo_expert_program_v1",
+  "protocol": "rabo_command_v1",
+  "task": "双臂协作依次抓取B、C、A螺母，由右手递交左手并放入目标区",
+  "fixed_nut_poses": {
+    "B": [
+      -0.3413,
+      -0.171,
+      0.2806,
+      0.0,
+      0.0,
+      0.5233
+    ],
+    "A": [
+      -0.2286,
+      -0.0999,
+      0.2819,
+      0.0,
+      0.0,
+      0.5233
+    ],
+    "C": [
+      -0.2975,
+      -0.0527,
+      0.2872,
+      0.0,
+      0.0,
+      0.5233
+    ]
+  },
+  "num_steps": 59,
+  "commands": [
+    {
+      "step": 0,
+      "phase": "approach_B",
+      "command": {
+        "action_type": "right_arm_move_to",
+        "right_moves": [
+          {
+            "label": "右臂接近B",
+            "pose": [
+              -0.2803,
+              0.157,
+              -0.331,
+              0.0,
+              0.8,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 1,
+      "phase": "right_grasp_B",
+      "command": {
+        "action_type": "right_hand_clench",
+        "clench": [
+          1.0,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "step": 2,
+      "phase": "right_grasp_B",
+      "command": {
+        "action_type": "right_hand_grasp_force",
+        "strength": 0.4,
+        "fingers": [
+          1,
+          2,
+          3,
+          4
+        ]
+      }
+    },
+    {
+      "step": 3,
+      "phase": "lift_and_left_approach_B",
+      "command": {
+        "action_type": "parallel_arm_sequence",
+        "right_moves": [
+          {
+            "label": "右臂B提起",
+            "pose": [
+              -0.41,
+              0.12,
+              -0.03,
+              0.0,
+              0.8,
+              0.0
+            ]
+          },
+          {
+            "label": "右臂B进入交接位",
+            "pose": [
+              -0.41,
+              -0.005,
+              -0.03,
+              0.0,
+              0.8,
+              0.0
+            ]
+          }
+        ],
+        "left_moves": [
+          {
+            "label": "左臂B粗接近",
+            "pose": [
+              0.43,
+              0.3,
+              -0.1,
+              0.0,
+              1.3,
+              1.57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 4,
+      "phase": "left_fine_approach_B",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂B精接近",
+            "pose": [
+              0.44,
+              0.06,
+              -0.2,
+              0.0,
+              1.3,
+              1.57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 5,
+      "phase": "left_fine_approach_B",
+      "command": {
+        "action_type": "left_hand_clench",
+        "clench": [
+          0.0,
+          0.3,
+          0.3,
+          0.3,
+          0.3,
+          0.3
+        ]
+      }
+    },
+    {
+      "step": 6,
+      "phase": "left_fine_approach_B",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂B接取高度",
+            "pose": [
+              0.44,
+              0.06,
+              -0.185,
+              0.0,
+              1.3,
+              1.57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 7,
+      "phase": "handoff_B_right_release",
+      "command": {
+        "action_type": "right_hand_clench",
+        "clench": [
+          0.9,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "step": 8,
+      "phase": "handoff_B_right_lift_clear",
+      "command": {
+        "action_type": "right_arm_move_to",
+        "right_moves": [
+          {
+            "label": "右臂B释放后抬起",
+            "pose": [
+              -0.4,
+              0.0,
+              0.12,
+              0.0,
+              0.8,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 9,
+      "phase": "handoff_B_settle",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 0.4
+      }
+    },
+    {
+      "step": 10,
+      "phase": "handoff_B_left_grasp",
+      "command": {
+        "action_type": "left_hand_clench",
+        "clench": [
+          0.0,
+          0.5,
+          0.5,
+          0.5,
+          0.5,
+          0.5
+        ]
+      }
+    },
+    {
+      "step": 11,
+      "phase": "handoff_B_left_grasp",
+      "command": {
+        "action_type": "left_hand_grasp_force",
+        "strength": 1.0
+      }
+    },
+    {
+      "step": 12,
+      "phase": "handoff_B_left_grasp",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 0.15
+      }
+    },
+    {
+      "step": 13,
+      "phase": "place_B",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂路径点",
+            "pose": [
+              0.44,
+              0.06,
+              -0.05,
+              0.0,
+              1.3,
+              1.57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 14,
+      "phase": "place_B",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂路径点",
+            "pose": [
+              0.38,
+              0.25,
+              -0.22,
+              0.0,
+              -0.8,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 15,
+      "phase": "release_B",
+      "command": {
+        "action_type": "left_hand_clench",
+        "clench": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "step": 16,
+      "phase": "release_B",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 0.2
+      }
+    },
+    {
+      "step": 17,
+      "phase": "release_B",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂路径点",
+            "pose": [
+              0.38,
+              0.25,
+              -0.12,
+              0.0,
+              -0.8,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 18,
+      "phase": "wait_after_B",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 1.0
+      }
+    },
+    {
+      "step": 19,
+      "phase": "approach_C",
+      "command": {
+        "action_type": "right_arm_move_to",
+        "right_moves": [
+          {
+            "label": "右臂接近C",
+            "pose": [
+              -0.3241,
+              0.03869999999999999,
+              -0.33,
+              0.0,
+              0.8,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 20,
+      "phase": "right_grasp_C",
+      "command": {
+        "action_type": "right_hand_clench",
+        "clench": [
+          1.0,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "step": 21,
+      "phase": "right_grasp_C",
+      "command": {
+        "action_type": "right_hand_grasp_force",
+        "strength": 0.8,
+        "fingers": [
+          1,
+          2,
+          3,
+          4
+        ]
+      }
+    },
+    {
+      "step": 22,
+      "phase": "lift_and_left_approach_C",
+      "command": {
+        "action_type": "parallel_arm_sequence",
+        "right_moves": [
+          {
+            "label": "右臂C提起",
+            "pose": [
+              -0.41,
+              0.12,
+              -0.023799999999999998,
+              0.0,
+              0.8,
+              0.0
+            ]
+          },
+          {
+            "label": "右臂C进入交接位",
+            "pose": [
+              -0.41,
+              -0.005,
+              -0.023799999999999998,
+              0.0,
+              0.8,
+              0.0
+            ]
+          }
+        ],
+        "left_moves": [
+          {
+            "label": "左臂C粗接近",
+            "pose": [
+              0.43,
+              0.3,
+              -0.09380000000000001,
+              0.0,
+              1.3,
+              1.57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 23,
+      "phase": "left_fine_approach_C",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂C精接近",
+            "pose": [
+              0.44,
+              0.06,
+              -0.25,
+              0.0,
+              1.3,
+              1.57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 24,
+      "phase": "left_fine_approach_C",
+      "command": {
+        "action_type": "left_hand_clench",
+        "clench": [
+          0.0,
+          0.3,
+          0.3,
+          0.3,
+          0.3,
+          0.3
+        ]
+      }
+    },
+    {
+      "step": 25,
+      "phase": "left_fine_approach_C",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂C接取高度",
+            "pose": [
+              0.44,
+              0.06,
+              -0.185,
+              0.0,
+              1.3,
+              1.57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 26,
+      "phase": "handoff_C_right_release",
+      "command": {
+        "action_type": "right_hand_clench",
+        "clench": [
+          0.9,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "step": 27,
+      "phase": "handoff_C_right_lift_clear",
+      "command": {
+        "action_type": "right_arm_move_to",
+        "right_moves": [
+          {
+            "label": "右臂C释放后抬起",
+            "pose": [
+              -0.4,
+              0.0,
+              0.0962,
+              0.0,
+              0.8,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 28,
+      "phase": "handoff_C_settle",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 0.4
+      }
+    },
+    {
+      "step": 29,
+      "phase": "handoff_C_left_grasp",
+      "command": {
+        "action_type": "left_hand_clench",
+        "clench": [
+          0.0,
+          0.5,
+          0.5,
+          0.5,
+          0.5,
+          0.5
+        ]
+      }
+    },
+    {
+      "step": 30,
+      "phase": "handoff_C_left_grasp",
+      "command": {
+        "action_type": "left_hand_grasp_force",
+        "strength": 1.0
+      }
+    },
+    {
+      "step": 31,
+      "phase": "handoff_C_left_grasp",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 0.15
+      }
+    },
+    {
+      "step": 32,
+      "phase": "place_C",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂路径点",
+            "pose": [
+              0.44,
+              0.06,
+              -0.1,
+              0.0,
+              1.3,
+              1.57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 33,
+      "phase": "place_C",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂路径点",
+            "pose": [
+              0.34,
+              0.25,
+              -0.12,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 34,
+      "phase": "place_C",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂路径点",
+            "pose": [
+              0.34,
+              0.25,
+              -0.2,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 35,
+      "phase": "release_C",
+      "command": {
+        "action_type": "left_hand_clench",
+        "clench": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "step": 36,
+      "phase": "release_C",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 0.2
+      }
+    },
+    {
+      "step": 37,
+      "phase": "release_C",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂路径点",
+            "pose": [
+              0.34,
+              0.25,
+              -0.1,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 38,
+      "phase": "wait_after_C",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 1.0
+      }
+    },
+    {
+      "step": 39,
+      "phase": "approach_A",
+      "command": {
+        "action_type": "right_arm_move_to",
+        "right_moves": [
+          {
+            "label": "右臂接近A",
+            "pose": [
+              -0.413,
+              0.0859,
+              -0.3268,
+              0.0,
+              0.8,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 40,
+      "phase": "right_grasp_A",
+      "command": {
+        "action_type": "right_hand_clench",
+        "clench": [
+          1.0,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "step": 41,
+      "phase": "right_grasp_A",
+      "command": {
+        "action_type": "right_hand_grasp_force",
+        "strength": 0.5,
+        "fingers": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      }
+    },
+    {
+      "step": 42,
+      "phase": "lift_and_left_approach_A",
+      "command": {
+        "action_type": "parallel_arm_sequence",
+        "right_moves": [
+          {
+            "label": "右臂A提起",
+            "pose": [
+              -0.41,
+              0.12,
+              -0.029099999999999997,
+              0.0,
+              0.8,
+              0.0
+            ]
+          },
+          {
+            "label": "右臂A进入交接位",
+            "pose": [
+              -0.41,
+              -0.005,
+              -0.029099999999999997,
+              0.0,
+              0.8,
+              0.0
+            ]
+          }
+        ],
+        "left_moves": [
+          {
+            "label": "左臂A粗接近",
+            "pose": [
+              0.43,
+              0.3,
+              -0.09910000000000001,
+              0.0,
+              1.3,
+              1.57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 43,
+      "phase": "left_fine_approach_A",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂A精接近",
+            "pose": [
+              0.44,
+              0.06,
+              -0.2,
+              0.0,
+              1.3,
+              1.57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 44,
+      "phase": "left_fine_approach_A",
+      "command": {
+        "action_type": "left_hand_clench",
+        "clench": [
+          0.0,
+          0.3,
+          0.3,
+          0.3,
+          0.3,
+          0.3
+        ]
+      }
+    },
+    {
+      "step": 45,
+      "phase": "left_fine_approach_A",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂A接取高度",
+            "pose": [
+              0.44,
+              0.06,
+              -0.18,
+              0.0,
+              1.3,
+              1.57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 46,
+      "phase": "handoff_A_right_release",
+      "command": {
+        "action_type": "right_hand_clench",
+        "clench": [
+          0.9,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "step": 47,
+      "phase": "handoff_A_right_lift_clear",
+      "command": {
+        "action_type": "right_arm_move_to",
+        "right_moves": [
+          {
+            "label": "右臂A释放后抬起",
+            "pose": [
+              -0.4,
+              0.0,
+              0.0509,
+              0.0,
+              0.8,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 48,
+      "phase": "handoff_A_settle",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 0.4
+      }
+    },
+    {
+      "step": 49,
+      "phase": "handoff_A_left_grasp",
+      "command": {
+        "action_type": "left_hand_clench",
+        "clench": [
+          0.0,
+          0.5,
+          0.5,
+          0.5,
+          0.5,
+          0.5
+        ]
+      }
+    },
+    {
+      "step": 50,
+      "phase": "handoff_A_left_grasp",
+      "command": {
+        "action_type": "left_hand_grasp_force",
+        "strength": 1.0
+      }
+    },
+    {
+      "step": 51,
+      "phase": "handoff_A_left_grasp",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 0.15
+      }
+    },
+    {
+      "step": 52,
+      "phase": "place_A",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂路径点",
+            "pose": [
+              0.43,
+              0.25,
+              -0.12,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 53,
+      "phase": "place_A",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂路径点",
+            "pose": [
+              0.43,
+              0.25,
+              -0.2,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 54,
+      "phase": "release_A",
+      "command": {
+        "action_type": "left_hand_clench",
+        "clench": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "step": 55,
+      "phase": "release_A",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 0.2
+      }
+    },
+    {
+      "step": 56,
+      "phase": "release_A",
+      "command": {
+        "action_type": "left_arm_move_to",
+        "left_moves": [
+          {
+            "label": "左臂路径点",
+            "pose": [
+              0.43,
+              0.25,
+              -0.1,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": 57,
+      "phase": "completed",
+      "command": {
+        "action_type": "wait",
+        "duration_s": 0.15
+      }
+    },
+    {
+      "step": 58,
+      "phase": "completed",
+      "command": {
+        "action_type": "done"
+      }
+    }
+  ]
+}
