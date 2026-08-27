@@ -18,6 +18,8 @@ from drivers import (
     RaboDevices,
     RemoteCommandExecutor,
     Ros2SensorBackend,
+    VLA_ACTION_SPACE,
+    VLAActionAdapter,
     load_config,
 )
 
@@ -61,9 +63,11 @@ class RemoteVLAController:
         self.devices: RaboDevices | None = None
         self.command_executor: RemoteCommandExecutor | None = None
         self.sensors: Any | None = None
+        self.action_adapter = VLAActionAdapter()
 
         self.session_id = uuid.uuid4().hex[:8]
         self.instruction = runtime.INSTRUCTION or str(self.robot_config.dataset["task"])
+        self.last_action: dict[str, Any] | None = None
         self.last_command: dict[str, Any] | None = None
         self.last_execution: dict[str, Any] | None = None
 
@@ -134,6 +138,9 @@ class RemoteVLAController:
                 for name in self.camera_names
             },
             "sim_time": float(snapshot.sim_time),
+            "previous_action": self.last_action,
+            # Retain this compatibility field while the hybrid backend still
+            # uses the validated command executor internally.
             "previous_command": self.last_command,
             "previous_execution": self.last_execution,
         }
@@ -151,7 +158,7 @@ class RemoteVLAController:
             if isinstance(chunk, list) and chunk:
                 value = chunk[0]
         if value is None:
-            raise RuntimeError("Remote response has neither command nor numeric action")
+            raise RuntimeError("Remote response has no executable action")
         action = np.asarray(value, dtype=np.float32)
         if action.ndim != 1 or action.size == 0 or not np.isfinite(action).all():
             raise RuntimeError(f"Invalid remote action shape/value: {action.shape}")
@@ -191,6 +198,22 @@ class RemoteVLAController:
             max_hand_step=runtime.MAX_HAND_STEP_RAD,
         )
 
+    def _execute_structured_command(self, command: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+        self.last_command = command
+        if str(command.get("action_type")) == "done":
+            self.last_execution = {"done": True}
+            return True, self.last_execution
+        if not runtime.EXECUTE_REMOTE_COMMANDS:
+            self.last_execution = {"shadow": True}
+            return False, self.last_execution
+        if self.command_executor is None:
+            raise RuntimeError("Cannot execute remote action with mock backend")
+        started = time.perf_counter()
+        result = self.command_executor.execute(command)
+        result["elapsed_s"] = round(time.perf_counter() - started, 6)
+        self.last_execution = result
+        return bool(result.get("done", False)), result
+
     def _execute_reply(
         self, reply: dict[str, Any], snapshot: Any, request_id: str
     ) -> tuple[bool, dict[str, Any] | None]:
@@ -200,30 +223,39 @@ class RemoteVLAController:
                 f"4080 request_id mismatch: expected {request_id!r}, got {reply_request_id!r}"
             )
 
+        protocol = reply.get("protocol")
+        if protocol not in {None, runtime.ORACLE_PROTOCOL}:
+            raise RuntimeError(f"Unexpected remote action protocol: {protocol!r}")
+
+        action_value = reply.get("action")
+        if isinstance(action_value, dict):
+            action_space = reply.get("action_space")
+            if action_space not in {None, VLA_ACTION_SPACE}:
+                raise RuntimeError(f"Unexpected VLA action_space: {action_space!r}")
+            self.last_action = action_value
+            command = self.action_adapter.to_command(action_value, action_space)
+            return self._execute_structured_command(command)
+
+        # Backward-compatible structured command path for the previous bridge.
         command = reply.get("command")
         if isinstance(command, dict):
-            protocol = reply.get("protocol")
-            if protocol not in {None, runtime.ORACLE_PROTOCOL}:
-                raise RuntimeError(f"Unexpected remote command protocol: {protocol!r}")
-            self.last_command = command
-            if str(command.get("action_type")) == "done":
-                self.last_execution = {"done": True}
-                return True, self.last_execution
-            if not runtime.EXECUTE_REMOTE_COMMANDS:
-                self.last_execution = {"shadow": True}
-                return False, self.last_execution
-            if self.command_executor is None:
-                raise RuntimeError("Cannot execute remote command with mock backend")
-            started = time.perf_counter()
-            result = self.command_executor.execute(command)
-            result["elapsed_s"] = round(time.perf_counter() - started, 6)
-            self.last_execution = result
-            return bool(result.get("done", False)), result
+            self.last_action = None
+            return self._execute_structured_command(command)
 
         action = self._remote_action(reply)
         result = self._execute_numeric(action, snapshot)
         self.last_execution = result
         return False, result
+
+    @staticmethod
+    def _reply_kind(reply: dict[str, Any]) -> tuple[str, str | None]:
+        action = reply.get("action")
+        if isinstance(action, dict):
+            return "vla_action", str(action.get("type", "unknown"))
+        command = reply.get("command")
+        if isinstance(command, dict):
+            return "legacy_command", str(command.get("action_type", "unknown"))
+        return "numeric_action", None
 
     def run(self) -> None:
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -283,19 +315,18 @@ class RemoteVLAController:
                 done, result = self._execute_reply(
                     remote_reply.payload, snapshot, request_id
                 )
+                response_kind, action_type = self._reply_kind(remote_reply.payload)
 
                 self._json(
                     "remote_reply",
                     request_id=request_id,
                     step=step,
                     transport=remote_reply.transport,
-                    response_kind=(
-                        "command" if "command" in remote_reply.payload
-                        else "numeric_action"
-                    ),
-                    action_type=(remote_reply.payload.get("command") or {}).get(
-                        "action_type"
-                    ),
+                    response_kind=response_kind,
+                    action_type=action_type,
+                    action_space=remote_reply.payload.get("action_space"),
+                    policy=remote_reply.payload.get("policy"),
+                    model=remote_reply.payload.get("model"),
                     backend=remote_reply.payload.get("backend"),
                     inference_ms=remote_reply.payload.get("inference_ms"),
                     rtt_ms=round(rtt_ms, 3),
