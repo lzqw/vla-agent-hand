@@ -33,9 +33,9 @@ STARTUP_DELAY_S = float(os.getenv("VLA_STARTUP_DELAY_S", "1"))
 MAX_CYCLES = int(os.getenv("VLA_MAX_CYCLES", "0"))
 JPEG_QUALITY = int(os.getenv("VLA_JPEG_QUALITY", "80"))
 
-# New default: 4080 returns only pure joint-position actions.  The legacy
-# structured command path remains available as an explicit fallback.
-EXECUTE_ACTIONS = os.getenv("VLA_EXECUTE_ACTIONS", "1") == "1"
+# Pure-joint policies are new and should be observed in shadow mode once before
+# actuation. Set VLA_EXECUTE_ACTIONS=1 after confirming 36D outputs are sane.
+EXECUTE_ACTIONS = os.getenv("VLA_EXECUTE_ACTIONS", "0") == "1"
 EXECUTE_REMOTE_COMMANDS = os.getenv("VLA_EXECUTE_REMOTE_COMMANDS", "0") == "1"
 ACTION_MODE = os.getenv("VLA_ACTION_MODE", "auto").strip().lower()
 JOINT_ACTION_SPACE = os.getenv("VLA_JOINT_ACTION_SPACE", "joint_position_36d")
