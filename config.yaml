@@ -1,0 +1,102 @@
+dataset:
+  root: ./datasets/rabo_nut_handoff_simple_v1_3cam_v3
+  fps: 5
+  chunk_size: 1000
+  robot_type: linker_a7_o6_bimanual
+  num_cameras: 3
+  task: 双臂协作依次抓取B、C、A螺母，由右手递交左手并放入目标区
+  language_variants:
+  - 双臂协作依次抓取B、C、A螺母，由右手递交左手并放入目标区
+  - 右手按B、C、A的顺序抓取螺母，逐个交给左手完成放置
+  - 完成三个螺母的双臂接力搬运，顺序为B、C、A
+  - 使用右臂抓取、左臂接取并摆放B、C、A三个螺母
+  - 将B、C、A螺母依次从右手交接给左手并放到指定位置
+  cameras:
+    cam_high: r6ef2dc_tp_cam_303d2b1ce0
+    cam_left_wrist: rbd03eb_tp_cam_069a6739f3
+    cam_right_wrist: r412d23_tp_cam_3c67aef2bc
+  primary_camera: cam_high
+  image_width: 480
+  image_height: 270
+  video_fourcc: mp4v
+  readiness_timeout_s: 30.0
+  camera_ready_min_frames: 5
+  camera_stall_timeout_s: 3.0
+  sample_wait_timeout_s: 0.5
+  ring_buffer_depth: 4
+  writer_queue_size: 64
+  max_joint_age_s: 1.0
+  max_camera_skew_s: 1.0
+  max_stamp_gap_s: 0.6
+state:
+  active_hand_indices: [0, 1, 3, 5, 7, 9]
+  hand_joint_names:
+  - thumb_cmc_yaw
+  - thumb_cmc_pitch
+  - thumb_ip
+  - index_mcp_pitch
+  - index_dip
+  - middle_mcp_pitch
+  - middle_dip
+  - ring_mcp_pitch
+  - ring_dip
+  - pinky_mcp_pitch
+  - pinky_dip
+  joints:
+    left_arm:
+    - {name: left_arm_joint_1, topic: rbd03eb_tp_ps_08fa69bc43, ros_name: rbd03eb_joint_5a89947698}
+    - {name: left_arm_joint_2, topic: rbd03eb_tp_ps_y1vmospyub, ros_name: rbd03eb_joint_f555168960}
+    - {name: left_arm_joint_3, topic: rbd03eb_tp_ps_rsqed0qcrb, ros_name: rbd03eb_joint_0e4e3b51ac}
+    - {name: left_arm_joint_4, topic: rbd03eb_tp_ps_2m4fzrdssg, ros_name: rbd03eb_joint_164adb5dca}
+    - {name: left_arm_joint_5, topic: rbd03eb_tp_ps_1pa9vnh1mr, ros_name: rbd03eb_joint_7572c2386d}
+    - {name: left_arm_joint_6, topic: rbd03eb_tp_ps_y8sm0inqbu, ros_name: rbd03eb_joint_625db43b33}
+    - {name: left_arm_joint_7, topic: rbd03eb_tp_ps_4jjp9rlwus, ros_name: rbd03eb_joint_a6155f358a}
+    right_arm:
+    - {name: right_arm_joint_1, topic: r412d23_tp_ps_08fa69bc43, ros_name: r412d23_joint_25af24fe79}
+    - {name: right_arm_joint_2, topic: r412d23_tp_ps_y1vmospyub, ros_name: r412d23_joint_2f2499504f}
+    - {name: right_arm_joint_3, topic: r412d23_tp_ps_rsqed0qcrb, ros_name: r412d23_joint_90d3a309ba}
+    - {name: right_arm_joint_4, topic: r412d23_tp_ps_2m4fzrdssg, ros_name: r412d23_joint_38783523af}
+    - {name: right_arm_joint_5, topic: r412d23_tp_ps_1pa9vnh1mr, ros_name: r412d23_joint_d828c7277a}
+    - {name: right_arm_joint_6, topic: r412d23_tp_ps_y8sm0inqbu, ros_name: r412d23_joint_34d53cf32b}
+    - {name: right_arm_joint_7, topic: r412d23_tp_ps_4jjp9rlwus, ros_name: r412d23_joint_a3a9be1d5d}
+    left_hand:
+    - {name: left_hand_thumb_cmc_yaw, topic: r136d7b_tp_ps_kfl2g3asap, ros_name: r136d7b_joint_20ac046af7}
+    - {name: left_hand_thumb_cmc_pitch, topic: r136d7b_tp_ps_c344tguind, ros_name: r136d7b_joint_7c9b0f5dac}
+    - {name: left_hand_thumb_ip, topic: r136d7b_tp_ps_f1re3fuf56, ros_name: r136d7b_joint_9f052fb9b2}
+    - {name: left_hand_index_mcp_pitch, topic: r136d7b_tp_ps_k3y7rwcnkq, ros_name: r136d7b_joint_1c463fc81a}
+    - {name: left_hand_index_dip, topic: r136d7b_tp_ps_3id78faqov, ros_name: r136d7b_joint_02d7e3c450}
+    - {name: left_hand_middle_mcp_pitch, topic: r136d7b_tp_ps_1ff4n99g6p, ros_name: r136d7b_joint_623071b675}
+    - {name: left_hand_middle_dip, topic: r136d7b_tp_ps_l2kojhzci0, ros_name: r136d7b_joint_4e88f26ae9}
+    - {name: left_hand_ring_mcp_pitch, topic: r136d7b_tp_ps_gww3yfamdt, ros_name: r136d7b_joint_c2358099a4}
+    - {name: left_hand_ring_dip, topic: r136d7b_tp_ps_zp3f47zr30, ros_name: r136d7b_joint_88af9e2c20}
+    - {name: left_hand_pinky_mcp_pitch, topic: r136d7b_tp_ps_o6aptfg62g, ros_name: r136d7b_joint_cab9143c1f}
+    - {name: left_hand_pinky_dip, topic: r136d7b_tp_ps_26hns2y9iz, ros_name: r136d7b_joint_4851a0ceaa}
+    right_hand:
+    - {name: right_hand_thumb_cmc_yaw, topic: rcd72e2_tp_ps_3gpp28c61u, ros_name: rcd72e2_joint_a128a8a7e8}
+    - {name: right_hand_thumb_cmc_pitch, topic: rcd72e2_tp_ps_msti8uutyd, ros_name: rcd72e2_joint_d6fdfa63a1}
+    - {name: right_hand_thumb_ip, topic: rcd72e2_tp_ps_wtszomzf2i, ros_name: rcd72e2_joint_b812826a3b}
+    - {name: right_hand_index_mcp_pitch, topic: rcd72e2_tp_ps_8n8u1jtrj3, ros_name: rcd72e2_joint_a80961cc30}
+    - {name: right_hand_index_dip, topic: rcd72e2_tp_ps_v0b7dxyble, ros_name: rcd72e2_joint_d4c3ace083}
+    - {name: right_hand_middle_mcp_pitch, topic: rcd72e2_tp_ps_q2al5ws592, ros_name: rcd72e2_joint_31658f988d}
+    - {name: right_hand_middle_dip, topic: rcd72e2_tp_ps_zrbc9dcp12, ros_name: rcd72e2_joint_2fca2e44d0}
+    - {name: right_hand_ring_mcp_pitch, topic: rcd72e2_tp_ps_cxjshiucra, ros_name: rcd72e2_joint_ce3fcf854f}
+    - {name: right_hand_ring_dip, topic: rcd72e2_tp_ps_4d9q0h9sn8, ros_name: rcd72e2_joint_9efa81f107}
+    - {name: right_hand_pinky_mcp_pitch, topic: rcd72e2_tp_ps_up6h8dvvum, ros_name: rcd72e2_joint_2c7995baf1}
+    - {name: right_hand_pinky_dip, topic: rcd72e2_tp_ps_ilteetn3js, ros_name: rcd72e2_joint_4283bce291}
+rabo:
+  mode: sim
+  world_id: ww4b1e6f8392584c89902a6783a9f53075
+  right_arm_id: r412d237980e3167577d7aece10f7aedb
+  right_hand_id: rcd72e2daf71f064c29aa45d4eeceeca9
+  left_arm_id: rbd03ebf4ebf83c6a6a64754454bc520a
+  left_hand_id: r136d7b4b6e527ea3875679b4bf7eeb7d
+  nut_ids:
+    B: thing_e937f633-faed-4b2e-b609-a7b80825a64a
+    A: thing_3eb64241-4166-4c4e-9144-edf733c885f1
+    C: thing_4a38ffae-a85b-43c9-8b20-abb0cf6dcac7
+collection:
+  episodes: 10
+  seed: 20260818
+  interactive_success: true
+  discard_failed: true
+  wait_between_episodes_s: 1.0
