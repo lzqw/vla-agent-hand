@@ -27,6 +27,7 @@ env/
 *.log
 *.tmp
 .vla_token
+.agent_mode
 .env
 .env.*
 datasets/
