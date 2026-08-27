@@ -16,8 +16,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .config import PROTOCOL_VERSION, load_settings
 from .policies import (
+    BCJointVLAPolicy,
     ExpertLookupPolicy,
     ImageInput,
+    JointVLAPolicy,
     PolicyInputError,
     PolicyNotReadyError,
     PolicyRequest,
@@ -98,7 +100,6 @@ async def _load_policy():
         await policy.warmup()
         return policy
     if settings.policy == "dexvla":
-        # Keep the model stack completely unloaded for zero/expert/rabo_vla.
         from .policies.dexvla_policy import DexVLAPolicy
 
         policy = await asyncio.to_thread(DexVLAPolicy, settings)
@@ -108,6 +109,14 @@ async def _load_policy():
         return ExpertLookupPolicy(settings.expert_program_path)
     if settings.policy == "rabo_vla":
         return RaboVLAPolicy(settings.expert_program_path)
+    if settings.policy == "joint_vla":
+        return JointVLAPolicy(
+            settings.joint_reference_path,
+            initial_search=settings.joint_initial_search,
+            forward_window=settings.joint_forward_window,
+        )
+    if settings.policy == "bc_joint_vla":
+        return BCJointVLAPolicy(settings.bc_joint_model_dir)
     raise ValueError(f"Unsupported VLA_POLICY: {settings.policy}")
 
 
@@ -133,7 +142,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="VLA Bridge", version="2.1.0", lifespan=lifespan)
+app = FastAPI(title="VLA Bridge", version="2.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -205,7 +214,6 @@ def _policy_request(message: StateMessage | HttpActionRequest) -> PolicyRequest:
 
 
 async def _predict(message: StateMessage | HttpActionRequest) -> dict[str, Any]:
-    # Preferred VLA-style API: action = await policy.act(observation).
     act = getattr(app.state.policy, "act", None)
     if act is not None:
         async with app.state.policy_lock:
@@ -217,7 +225,6 @@ async def _predict(message: StateMessage | HttpActionRequest) -> dict[str, Any]:
             raise TypeError("policy.act() must return a dict")
         return response
 
-    # Compatibility path for older structured policies.
     predict_request = getattr(app.state.policy, "predict_request", None)
     if predict_request is not None:
         async with app.state.policy_lock:
@@ -229,7 +236,6 @@ async def _predict(message: StateMessage | HttpActionRequest) -> dict[str, Any]:
             raise TypeError("policy.predict_request() must return a dict")
         return response
 
-    # Numeric learned-policy path (DexVLA etc.).
     started = time.perf_counter()
     request = _policy_request(message)
     async with app.state.policy_lock:
