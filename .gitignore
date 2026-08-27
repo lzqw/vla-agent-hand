@@ -30,6 +30,7 @@ env/
 .env
 .env.*
 datasets/
+expert_data/
 logs/
 outputs/
 checkpoints/
