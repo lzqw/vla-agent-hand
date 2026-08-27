@@ -9,8 +9,14 @@ WorkingDirectory=%h/vla_bridge
 Environment=PYTHONUNBUFFERED=1
 Environment=VLA_BRIDGE_TOKEN_FILE=%h/.config/vla-bridge/token
 Environment=VLA_BRIDGE_INFERENCE_TIMEOUT_S=30
+# Keep the already validated structured controller as the safe default.  The
+# optional runtime.env below can override VLA_POLICY to joint_vla or bc_joint_vla
+# without editing this unit again.
 Environment=VLA_POLICY=rabo_vla
 Environment=EXPERT_PROGRAM_PATH=%h/vla_bridge/data/expert_program.json
+Environment=JOINT_REFERENCE_PATH=%h/vla_bridge/data/joint/reference_v1.npz
+Environment=BC_JOINT_MODEL_DIR=%h/vla_bridge/models/rabo_bc_joint_v1
+EnvironmentFile=-%h/.config/vla-bridge/runtime.env
 ExecStart=%h/vla_bridge/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8765 --ws-max-size 16777216 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
 RestartSec=3
