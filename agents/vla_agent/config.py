@@ -26,8 +26,6 @@ TOKEN_FILE = Path(
 
 MODE = os.getenv("RABO_MODE", "sim")
 SENSOR_BACKEND = os.getenv("RABO_SENSOR_BACKEND", "ros2")
-# Match the validated simple_v1 dataset/control cadence. Structured SDK commands
-# are blocking, so this is an upper bound; numeric VLA actions can run at 5 Hz.
 CONTROL_HZ = float(os.getenv("VLA_CONTROL_HZ", "5.0"))
 READY_TIMEOUT_S = float(os.getenv("VLA_READY_TIMEOUT_S", "30"))
 NETWORK_TIMEOUT_S = float(os.getenv("VLA_NETWORK_TIMEOUT_S", "5"))
@@ -35,8 +33,12 @@ STARTUP_DELAY_S = float(os.getenv("VLA_STARTUP_DELAY_S", "1"))
 MAX_CYCLES = int(os.getenv("VLA_MAX_CYCLES", "0"))
 JPEG_QUALITY = int(os.getenv("VLA_JPEG_QUALITY", "80"))
 
-EXECUTE_ACTIONS = os.getenv("VLA_EXECUTE_ACTIONS", "0") == "1"
+# New default: 4080 returns only pure joint-position actions.  The legacy
+# structured command path remains available as an explicit fallback.
+EXECUTE_ACTIONS = os.getenv("VLA_EXECUTE_ACTIONS", "1") == "1"
+EXECUTE_REMOTE_COMMANDS = os.getenv("VLA_EXECUTE_REMOTE_COMMANDS", "0") == "1"
 ACTION_MODE = os.getenv("VLA_ACTION_MODE", "auto").strip().lower()
+JOINT_ACTION_SPACE = os.getenv("VLA_JOINT_ACTION_SPACE", "joint_position_36d")
 MAX_ARM_STEP_RAD = float(os.getenv("VLA_MAX_ARM_STEP_RAD", "0.04"))
 MAX_HAND_STEP_RAD = float(os.getenv("VLA_MAX_HAND_STEP_RAD", "0.08"))
 
@@ -59,7 +61,6 @@ if CONTROL_HZ <= 0:
 if not 1 <= JPEG_QUALITY <= 100:
     raise ValueError("VLA_JPEG_QUALITY must be in [1,100]")
 
-EXECUTE_REMOTE_COMMANDS = os.getenv("VLA_EXECUTE_REMOTE_COMMANDS", "1") == "1"
 LOCAL_PREPOSITION = os.getenv("VLA_LOCAL_PREPOSITION", "1") == "1"
 RESET_FIXED_SCENE = os.getenv("VLA_RESET_FIXED_SCENE", "1") == "1"
 ORACLE_PROTOCOL = os.getenv("VLA_ORACLE_PROTOCOL", "rabo_command_v1")
