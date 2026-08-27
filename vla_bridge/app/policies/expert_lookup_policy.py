@@ -28,8 +28,9 @@ class ExpertLookupPolicy:
     ready = True
     output_action_dim = 0
 
-    def __init__(self, expert_path: Path) -> None:
+    def __init__(self, expert_path: Path, decision_log_label: str | None = "EXPERT") -> None:
         self.expert_path = expert_path.expanduser().resolve()
+        self.decision_log_label = decision_log_label
         try:
             raw = json.loads(self.expert_path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
@@ -140,12 +141,14 @@ class ExpertLookupPolicy:
             phase = "completed"
             command = {"action_type": "done"}
 
-        logger.info(
-            "[EXPERT] step=%d phase=%s action=%s",
-            oracle_step,
-            phase,
-            command["action_type"],
-        )
+        if self.decision_log_label:
+            logger.info(
+                "[%s] step=%d phase=%s action=%s",
+                self.decision_log_label,
+                oracle_step,
+                phase,
+                command["action_type"],
+            )
         return {
             "type": "action",
             "protocol": RABO_PROTOCOL,
