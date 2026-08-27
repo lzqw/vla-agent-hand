@@ -89,6 +89,10 @@ class Settings:
     max_message_bytes: int
     policy: str
     expert_program_path: Path
+    joint_reference_path: Path
+    joint_initial_search: int
+    joint_forward_window: int
+    bc_joint_model_dir: Path
     model_backend: str
     model_device: str
     model_dtype: str
@@ -103,6 +107,7 @@ class Settings:
 
 def load_settings() -> Settings:
     runtime = Path.home() / "vla_runtime"
+    bridge = Path.home() / "vla_bridge"
     return Settings(
         token=_load_or_create_token(),
         action_dim=_positive_int("VLA_BRIDGE_ACTION_DIM", 7),
@@ -110,12 +115,35 @@ def load_settings() -> Settings:
         inference_timeout_s=_positive_float("VLA_BRIDGE_INFERENCE_TIMEOUT_S", 300.0),
         max_message_bytes=_positive_int("VLA_BRIDGE_MAX_MESSAGE_BYTES", 16 * 1024 * 1024),
         policy=_choice(
-            "VLA_POLICY", "zero", {"zero", "dexvla", "expert_lookup", "rabo_vla"}
+            "VLA_POLICY",
+            "zero",
+            {
+                "zero",
+                "dexvla",
+                "expert_lookup",
+                "rabo_vla",
+                "joint_vla",
+                "bc_joint_vla",
+            },
         ),
         expert_program_path=Path(
             os.getenv(
                 "EXPERT_PROGRAM_PATH",
-                str(Path.home() / "vla_bridge" / "data" / "expert_program.json"),
+                str(bridge / "data" / "expert_program.json"),
+            )
+        ).expanduser(),
+        joint_reference_path=Path(
+            os.getenv(
+                "JOINT_REFERENCE_PATH",
+                str(bridge / "data" / "joint" / "reference_v1.npz"),
+            )
+        ).expanduser(),
+        joint_initial_search=_positive_int("JOINT_INITIAL_SEARCH", 250),
+        joint_forward_window=_positive_int("JOINT_FORWARD_WINDOW", 80),
+        bc_joint_model_dir=Path(
+            os.getenv(
+                "BC_JOINT_MODEL_DIR",
+                str(bridge / "models" / "rabo_bc_joint_v1"),
             )
         ).expanduser(),
         model_backend=_choice("MODEL_BACKEND", "dexvla", {"dexvla"}),
