@@ -1,4 +1,9 @@
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
 websockets>=13,<17
-
+numpy>=1.26,<3
+Pillow>=10,<12
+opencv-python-headless>=4.8,<5
+pyarrow>=15,<22
+# torch is used by BC training/inference. The 4080 host already has a local
+# PyTorch installation; do not reinstall a CUDA build unless explicitly needed.
