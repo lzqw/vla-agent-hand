@@ -1,0 +1,19 @@
+[Unit]
+Description=Public HTTPS/WSS tunnel for VLA bridge
+After=network-online.target vla-bridge.service
+Wants=network-online.target vla-bridge.service
+
+[Service]
+Type=simple
+ExecStart=%h/vla_bridge/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8765
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+KillSignal=SIGINT
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+
