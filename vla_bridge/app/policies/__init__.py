@@ -9,6 +9,7 @@ from .base import (
     UnavailablePolicy,
 )
 from .expert_lookup_policy import ExpertLookupPolicy
+from .rabo_vla_policy import RaboVLAPolicy
 from .zero_policy import ZeroPolicy
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "PolicyNotReadyError",
     "PolicyRequest",
     "PolicyResult",
+    "RaboVLAPolicy",
     "UnavailablePolicy",
     "ZeroPolicy",
 ]
