@@ -1,10 +1,14 @@
-# LLM 客户端 (OpenAI 兼容协议, 支持 OpenAI / DeepSeek / Qwen / Kimi /
-# 自部署 vLLM / Ollama 等)
-openai>=1.0
+# vla-agent: Rabo -> 4080 remote VLA/oracle runtime
+setuptools>=68,<80
+numpy==1.26.4
+opencv-python-headless>=4.8,<5
+PyYAML>=6,<7
+requests>=2.31,<3
+websocket-client>=1.8,<2
 
-# 平台输入通道 RemoteControl 来自 rabo_dev_kit (example_agent 用到)
+# Rabo platform private SDKs (installed/injected by the platform runtime)
 rabo-dev-kit
-requests
-# 控制机器人时再取消注释 (example_agent 没用到):
-# 凡 import 的第三方包都要列在这里, 否则平台运行环境装不上、import 失败。
-# rabo_robocap        # 机器人控制 SDK (机械臂/底盘/夹爪)
+rabo_robocap
+
+# Keep the template LLM dependency available; the vla_agent itself does not use it.
+openai>=1.0
