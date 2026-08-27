@@ -67,7 +67,7 @@ class RemoteVLAController:
 
         self.session_id = uuid.uuid4().hex[:8]
         self.instruction = runtime.INSTRUCTION or str(self.robot_config.dataset["task"])
-        self.last_action: dict[str, Any] | None = None
+        self.last_action: Any | None = None
         self.last_command: dict[str, Any] | None = None
         self.last_execution: dict[str, Any] | None = None
 
@@ -139,8 +139,6 @@ class RemoteVLAController:
             },
             "sim_time": float(snapshot.sim_time),
             "previous_action": self.last_action,
-            # Retain this compatibility field while the hybrid backend still
-            # uses the validated command executor internally.
             "previous_command": self.last_command,
             "previous_execution": self.last_execution,
         }
@@ -164,12 +162,33 @@ class RemoteVLAController:
             raise RuntimeError(f"Invalid remote action shape/value: {action.shape}")
         return action
 
-    def _execute_numeric(self, action: np.ndarray, snapshot: Any) -> dict[str, Any] | None:
+    def _execute_numeric(
+        self,
+        action: np.ndarray,
+        snapshot: Any,
+        action_space: str | None,
+    ) -> dict[str, Any] | None:
         if not runtime.EXECUTE_ACTIONS:
             return {"shadow_numeric": True, "action_dim": int(action.size)}
         if self.devices is None:
             raise RuntimeError("Cannot actuate numeric action without real Rabo devices")
 
+        if action.shape == (36,):
+            if action_space not in {None, runtime.JOINT_ACTION_SPACE}:
+                raise RuntimeError(
+                    f"36D joint action requires action_space={runtime.JOINT_ACTION_SPACE!r}, "
+                    f"got {action_space!r}"
+                )
+            result = self.devices.command_full_joint_action(
+                action=action,
+                current_full_state=snapshot.full_state,
+                max_arm_step=runtime.MAX_ARM_STEP_RAD,
+                max_hand_step=runtime.MAX_HAND_STEP_RAD,
+            )
+            return {**result, "action_dim": 36, "action_space": runtime.JOINT_ACTION_SPACE}
+
+        # Legacy numeric paths are retained only for compatibility with older
+        # learned policies; the new joint_vla/bc_joint_vla policies use 36D.
         current = np.asarray(snapshot.state, dtype=np.float32)
         if action.shape == (26,):
             target = action
@@ -236,22 +255,27 @@ class RemoteVLAController:
             command = self.action_adapter.to_command(action_value, action_space)
             return self._execute_structured_command(command)
 
-        # Backward-compatible structured command path for the previous bridge.
         command = reply.get("command")
         if isinstance(command, dict):
             self.last_action = None
             return self._execute_structured_command(command)
 
         action = self._remote_action(reply)
-        result = self._execute_numeric(action, snapshot)
+        action_space = reply.get("action_space")
+        self.last_action = action.tolist()
+        result = self._execute_numeric(action, snapshot, action_space)
         self.last_execution = result
-        return False, result
+        return bool(reply.get("done", False)), result
 
     @staticmethod
     def _reply_kind(reply: dict[str, Any]) -> tuple[str, str | None]:
         action = reply.get("action")
         if isinstance(action, dict):
             return "vla_action", str(action.get("type", "unknown"))
+        if isinstance(action, list):
+            if len(action) == 36:
+                return "joint_action", "joint_position_36d"
+            return "numeric_action", f"numeric_{len(action)}d"
         command = reply.get("command")
         if isinstance(command, dict):
             return "legacy_command", str(command.get("action_type", "unknown"))
@@ -272,6 +296,7 @@ class RemoteVLAController:
             transport=runtime.TRANSPORT,
             execute_commands=runtime.EXECUTE_REMOTE_COMMANDS,
             execute_numeric=runtime.EXECUTE_ACTIONS,
+            joint_action_space=runtime.JOINT_ACTION_SPACE,
             reset_fixed_scene=runtime.RESET_FIXED_SCENE,
             local_preposition=runtime.LOCAL_PREPOSITION,
             cameras=list(self.camera_names),
@@ -291,7 +316,7 @@ class RemoteVLAController:
             self.sensors.wait_ready(runtime.READY_TIMEOUT_S)
             self._json("sensors_ready")
 
-            if self.devices is not None and runtime.EXECUTE_REMOTE_COMMANDS:
+            if self.devices is not None and (runtime.EXECUTE_ACTIONS or runtime.EXECUTE_REMOTE_COMMANDS):
                 if runtime.RESET_FIXED_SCENE:
                     self._json("fixed_scene_reset_start")
                     self.devices.reset_fixed_scene()
@@ -328,10 +353,11 @@ class RemoteVLAController:
                     policy=remote_reply.payload.get("policy"),
                     model=remote_reply.payload.get("model"),
                     backend=remote_reply.payload.get("backend"),
+                    prediction=remote_reply.payload.get("prediction"),
                     inference_ms=remote_reply.payload.get("inference_ms"),
                     rtt_ms=round(rtt_ms, 3),
-                    observation_check=remote_reply.payload.get("observation_check"),
                     execution=result,
+                    done=done,
                 )
 
                 if done:
