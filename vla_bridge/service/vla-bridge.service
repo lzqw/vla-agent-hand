@@ -1,5 +1,5 @@
 [Unit]
-Description=VLA state-to-action bridge
+Description=RaboVLA multimodal observation-to-action bridge
 After=network-online.target
 Wants=network-online.target
 
@@ -9,7 +9,7 @@ WorkingDirectory=%h/vla_bridge
 Environment=PYTHONUNBUFFERED=1
 Environment=VLA_BRIDGE_TOKEN_FILE=%h/.config/vla-bridge/token
 Environment=VLA_BRIDGE_INFERENCE_TIMEOUT_S=30
-Environment=VLA_POLICY=expert_lookup
+Environment=VLA_POLICY=rabo_vla
 Environment=EXPERT_PROGRAM_PATH=%h/vla_bridge/data/expert_program.json
 ExecStart=%h/vla_bridge/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8765 --ws-max-size 16777216 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
