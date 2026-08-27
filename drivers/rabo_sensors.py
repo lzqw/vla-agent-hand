@@ -73,11 +73,9 @@ def image_to_bgr8(msg: Any) -> np.ndarray:
 class Ros2SensorBackend:
     """Subscribe to RGB cameras and read the 36D state through the official SDK.
 
-    The primary camera is safety-critical for policy/collection and must keep
-    updating. Secondary wrist cameras are best-effort: if one stalls after it
-    has produced at least one frame, the newest cached frame is reused instead
-    of aborting the episode. ``camera_reused`` exposes that condition to the
-    caller/dataset.
+    The primary camera is required to remain fresh. Secondary wrist cameras are
+    best-effort after they have produced an initial frame; when stale, their
+    newest cached frame is reused and surfaced through ``camera_reused``.
     """
 
     def __init__(
@@ -152,11 +150,16 @@ class Ros2SensorBackend:
             self._cond.notify_all()
 
     def wait_ready(self, timeout_s: float) -> None:
-        need = int(self.config.dataset.get("camera_ready_min_frames", 5))
+        primary = self.config.primary_camera
+        primary_need = int(self.config.dataset.get("camera_ready_min_frames", 5))
         deadline = time.monotonic() + timeout_s
         with self._cond:
             while True:
-                missing = [name for name, count in self._camera_msg_count.items() if count < need]
+                missing: list[str] = []
+                for name, count in self._camera_msg_count.items():
+                    need = primary_need if name == primary else 1
+                    if count < need:
+                        missing.append(f"{name}({count}/{need})")
                 if not missing:
                     return
                 remaining = deadline - time.monotonic()
