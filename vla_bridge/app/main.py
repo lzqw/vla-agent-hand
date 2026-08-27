@@ -21,6 +21,7 @@ from .policies import (
     PolicyInputError,
     PolicyNotReadyError,
     PolicyRequest,
+    RaboVLAPolicy,
     UnavailablePolicy,
     ZeroPolicy,
 )
@@ -97,7 +98,7 @@ async def _load_policy():
         await policy.warmup()
         return policy
     if settings.policy == "dexvla":
-        # Keep the model stack completely unloaded for zero/expert_lookup.
+        # Keep the model stack completely unloaded for zero/expert/rabo_vla.
         from .policies.dexvla_policy import DexVLAPolicy
 
         policy = await asyncio.to_thread(DexVLAPolicy, settings)
@@ -105,6 +106,8 @@ async def _load_policy():
         return policy
     if settings.policy == "expert_lookup":
         return ExpertLookupPolicy(settings.expert_program_path)
+    if settings.policy == "rabo_vla":
+        return RaboVLAPolicy(settings.expert_program_path)
     raise ValueError(f"Unsupported VLA_POLICY: {settings.policy}")
 
 
@@ -130,7 +133,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="VLA Bridge", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="VLA Bridge", version="2.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -202,6 +205,19 @@ def _policy_request(message: StateMessage | HttpActionRequest) -> PolicyRequest:
 
 
 async def _predict(message: StateMessage | HttpActionRequest) -> dict[str, Any]:
+    # Preferred VLA-style API: action = await policy.act(observation).
+    act = getattr(app.state.policy, "act", None)
+    if act is not None:
+        async with app.state.policy_lock:
+            response = await asyncio.wait_for(
+                act(message.model_dump()),
+                timeout=settings.inference_timeout_s,
+            )
+        if not isinstance(response, dict):
+            raise TypeError("policy.act() must return a dict")
+        return response
+
+    # Compatibility path for older structured policies.
     predict_request = getattr(app.state.policy, "predict_request", None)
     if predict_request is not None:
         async with app.state.policy_lock:
@@ -213,6 +229,7 @@ async def _predict(message: StateMessage | HttpActionRequest) -> dict[str, Any]:
             raise TypeError("policy.predict_request() must return a dict")
         return response
 
+    # Numeric learned-policy path (DexVLA etc.).
     started = time.perf_counter()
     request = _policy_request(message)
     async with app.state.policy_lock:
@@ -315,6 +332,7 @@ async def websocket_action(websocket: WebSocket) -> None:
                 "policy": policy_health.get("policy"),
                 "model": policy_health.get("model"),
                 "model_loaded": policy_health.get("model_loaded", False),
+                "action_space": policy_health.get("action_space"),
             }
         )
 
