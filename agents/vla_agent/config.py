@@ -26,7 +26,9 @@ TOKEN_FILE = Path(
 
 MODE = os.getenv("RABO_MODE", "sim")
 SENSOR_BACKEND = os.getenv("RABO_SENSOR_BACKEND", "ros2")
-CONTROL_HZ = float(os.getenv("VLA_CONTROL_HZ", "2.0"))
+# Match the validated simple_v1 dataset/control cadence. Structured SDK commands
+# are blocking, so this is an upper bound; numeric VLA actions can run at 5 Hz.
+CONTROL_HZ = float(os.getenv("VLA_CONTROL_HZ", "5.0"))
 READY_TIMEOUT_S = float(os.getenv("VLA_READY_TIMEOUT_S", "30"))
 NETWORK_TIMEOUT_S = float(os.getenv("VLA_NETWORK_TIMEOUT_S", "5"))
 STARTUP_DELAY_S = float(os.getenv("VLA_STARTUP_DELAY_S", "1"))
