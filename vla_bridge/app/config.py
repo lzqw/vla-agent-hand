@@ -5,7 +5,6 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
-
 PROTOCOL_VERSION = "vla-bridge.v1"
 
 
@@ -93,6 +92,10 @@ class Settings:
     joint_initial_search: int
     joint_forward_window: int
     bc_joint_model_dir: Path
+    bc_model_dir: Path
+    bc_shadow_only: bool
+    bc_device: str
+    bc_guard_max_advance: int
     model_backend: str
     model_device: str
     model_dtype: str
@@ -124,6 +127,7 @@ def load_settings() -> Settings:
                 "rabo_vla",
                 "joint_vla",
                 "bc_joint_vla",
+                "bc_vla",
             },
         ),
         expert_program_path=Path(
@@ -146,6 +150,15 @@ def load_settings() -> Settings:
                 str(bridge / "models" / "rabo_bc_joint_v1"),
             )
         ).expanduser(),
+        bc_model_dir=Path(
+            os.getenv(
+                "BC_MODEL_DIR",
+                str(bridge / "models" / "rabo_bc_v1"),
+            )
+        ).expanduser(),
+        bc_shadow_only=_boolean("BC_SHADOW_ONLY", True),
+        bc_device=_choice("BC_DEVICE", "auto", {"auto", "cuda", "cpu"}),
+        bc_guard_max_advance=_bounded_int("BC_GUARD_MAX_ADVANCE", 2, 0, 8),
         model_backend=_choice("MODEL_BACKEND", "dexvla", {"dexvla"}),
         model_device=_choice("MODEL_DEVICE", "cuda", {"cuda"}),
         model_dtype=_choice(

@@ -9,17 +9,23 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .config import PROTOCOL_VERSION, load_settings
 from .policies import (
-    BCJointVLAPolicy,
     ExpertLookupPolicy,
     ImageInput,
-    JointVLAPolicy,
     PolicyInputError,
     PolicyNotReadyError,
     PolicyRequest,
@@ -27,7 +33,6 @@ from .policies import (
     UnavailablePolicy,
     ZeroPolicy,
 )
-
 
 logger = logging.getLogger("uvicorn.error")
 settings = load_settings()
@@ -110,13 +115,29 @@ async def _load_policy():
     if settings.policy == "rabo_vla":
         return RaboVLAPolicy(settings.expert_program_path)
     if settings.policy == "joint_vla":
+        from .policies.joint_vla_policy import JointVLAPolicy
+
         return JointVLAPolicy(
             settings.joint_reference_path,
             initial_search=settings.joint_initial_search,
             forward_window=settings.joint_forward_window,
         )
     if settings.policy == "bc_joint_vla":
+        from .policies.bc_joint_policy import BCJointVLAPolicy
+
         return BCJointVLAPolicy(settings.bc_joint_model_dir)
+    if settings.policy == "bc_vla":
+        # Keep torch/Pillow completely unloaded unless BC is explicitly selected.
+        from .policies.bc_vla_policy import BCVLAPolicy
+
+        return await asyncio.to_thread(
+            BCVLAPolicy,
+            settings.bc_model_dir,
+            settings.expert_program_path,
+            shadow_only=settings.bc_shadow_only,
+            device=settings.bc_device,
+            guard_max_advance=settings.bc_guard_max_advance,
+        )
     raise ValueError(f"Unsupported VLA_POLICY: {settings.policy}")
 
 

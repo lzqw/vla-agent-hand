@@ -119,3 +119,11 @@ VLA_POLICY=rabo_vla
 ```
 
 后续替换内部动作生成器时，应保持 `act(observation) -> action` 这一层接口不变。
+
+## Supervised BC baseline
+
+可选的 `BCVLAPolicy` 实现真正经过监督训练的
+`RGB + 26D proprioception -> action_id -> rabo_vla_action_v1`。它不读取请求 step，默认先以
+`BC_SHADOW_ONLY=1` 与 Expert backend 对照，且不会自动替换生产 `rabo_vla`。数据格式、训练
+命令、指标和 shadow 切换方式见
+[`app/policies/bc/README.md`](app/policies/bc/README.md)。
