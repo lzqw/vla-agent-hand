@@ -110,7 +110,7 @@ def load_settings() -> Settings:
         inference_timeout_s=_positive_float("VLA_BRIDGE_INFERENCE_TIMEOUT_S", 300.0),
         max_message_bytes=_positive_int("VLA_BRIDGE_MAX_MESSAGE_BYTES", 16 * 1024 * 1024),
         policy=_choice(
-            "VLA_POLICY", "zero", {"zero", "dexvla", "expert_lookup"}
+            "VLA_POLICY", "zero", {"zero", "dexvla", "expert_lookup", "rabo_vla"}
         ),
         expert_program_path=Path(
             os.getenv(
