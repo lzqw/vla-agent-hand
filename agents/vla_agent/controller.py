@@ -187,13 +187,14 @@ class RemoteVLAController:
             )
             return {**result, "action_dim": 36, "action_space": runtime.JOINT_ACTION_SPACE}
 
-        # Legacy numeric paths are retained only for compatibility with older
-        # learned policies; the new joint_vla/bc_joint_vla policies use 36D.
         current = np.asarray(snapshot.state, dtype=np.float32)
         if action.shape == (26,):
             target = action
             scope = "full"
         elif action.shape == (14,):
+            # Preferred arm-only joint path. Hands are deliberately untouched;
+            # any grasp/release semantics arrive separately as hand_command and
+            # are executed through the validated clench/grasp_force SDK path.
             target = current.copy()
             target[:14] = action
             scope = "arms"
@@ -263,9 +264,23 @@ class RemoteVLAController:
         action = self._remote_action(reply)
         action_space = reply.get("action_space")
         self.last_action = action.tolist()
-        result = self._execute_numeric(action, snapshot, action_space)
+        numeric_result = self._execute_numeric(action, snapshot, action_space) or {}
+
+        # New arm-joint + original-hand protocol. The arm action is a genuine
+        # numeric policy output while hand grasp/release stays on the validated
+        # clench/grasp_force semantics. This intentionally avoids move_joints on
+        # the O6 hands, which can lose contact force in the handoff task.
+        hand_command = reply.get("hand_command")
+        hand_done = False
+        hand_result: dict[str, Any] | None = None
+        if isinstance(hand_command, dict):
+            hand_done, hand_result = self._execute_structured_command(hand_command)
+
+        result: dict[str, Any] = {"arm": numeric_result}
+        if hand_result is not None:
+            result["hand"] = hand_result
         self.last_execution = result
-        return bool(reply.get("done", False)), result
+        return bool(reply.get("done", False) or hand_done), result
 
     @staticmethod
     def _reply_kind(reply: dict[str, Any]) -> tuple[str, str | None]:
@@ -273,6 +288,8 @@ class RemoteVLAController:
         if isinstance(action, dict):
             return "vla_action", str(action.get("type", "unknown"))
         if isinstance(action, list):
+            if len(action) == 14:
+                return "joint_action", "arm_joint_position_14d"
             if len(action) == 36:
                 return "joint_action", "joint_position_36d"
             return "numeric_action", f"numeric_{len(action)}d"
@@ -350,6 +367,7 @@ class RemoteVLAController:
                     response_kind=response_kind,
                     action_type=action_type,
                     action_space=remote_reply.payload.get("action_space"),
+                    hand_action_type=(remote_reply.payload.get("hand_command") or {}).get("action_type"),
                     policy=remote_reply.payload.get("policy"),
                     model=remote_reply.payload.get("model"),
                     backend=remote_reply.payload.get("backend"),
