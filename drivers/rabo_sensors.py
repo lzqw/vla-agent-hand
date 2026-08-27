@@ -71,7 +71,14 @@ def image_to_bgr8(msg: Any) -> np.ndarray:
 
 
 class Ros2SensorBackend:
-    """Subscribe only to RGB cameras; read 36D joints through the official SDK."""
+    """Subscribe to RGB cameras and read the 36D state through the official SDK.
+
+    The primary camera is safety-critical for policy/collection and must keep
+    updating. Secondary wrist cameras are best-effort: if one stalls after it
+    has produced at least one frame, the newest cached frame is reused instead
+    of aborting the episode. ``camera_reused`` exposes that condition to the
+    caller/dataset.
+    """
 
     def __init__(
         self,
@@ -89,6 +96,7 @@ class Ros2SensorBackend:
         self._camera_msg_count = {name: 0 for name in config.camera_topics}
         self._camera_last_arrival = {name: 0.0 for name in config.camera_topics}
         self._last_camera_seq = {name: -1 for name in config.camera_topics}
+        self._last_stale_warning = {name: 0.0 for name in config.camera_topics}
         self._camera_node = None
         self._camera_executor = None
         self._camera_thread: threading.Thread | None = None
@@ -188,11 +196,25 @@ class Ros2SensorBackend:
 
         now = time.monotonic()
         stall_timeout = float(self.config.dataset.get("camera_stall_timeout_s", 3.0))
+        primary = self.config.primary_camera
         with self._cond:
             entries = {name: ring.newest() for name, ring in self._camera_rings.items()}
+            primary_last = self._camera_last_arrival.get(primary, 0.0)
+            if primary_last <= 0.0 or now - primary_last > stall_timeout:
+                raise RuntimeError(
+                    f"primary camera {primary} stalled for >{stall_timeout}s"
+                )
             for name, last in self._camera_last_arrival.items():
-                if last > 0 and now - last > stall_timeout:
-                    raise RuntimeError(f"camera {name} stalled for >{stall_timeout}s")
+                if name == primary or last <= 0.0:
+                    continue
+                age = now - last
+                if age > stall_timeout and now - self._last_stale_warning[name] > 5.0:
+                    print(
+                        f"[camera-warning] secondary camera {name} stale for {age:.1f}s; "
+                        "reusing latest cached frame",
+                        flush=True,
+                    )
+                    self._last_stale_warning[name] = now
         if any(entry is None for entry in entries.values()):
             return None
 
