@@ -1,14 +1,15 @@
 """VLA-style policy facade for the validated Rabo fixed-scene controller.
 
 The bridge-facing API is intentionally stable: ``act(observation) -> action``.
-The v1 implementation keeps the already validated expert-program controller as
-its action backend, so the transport and robot execution behavior do not change.
-A future learned VLA or server-side IK controller can replace that backend
+The v2 implementation exposes a real top-level VLA ``action`` object while
+keeping the already validated expert-program controller behind the policy.
+A future learned VLA or server-side IK backend can replace the controller
 without changing the Rabo web client contract.
 """
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from collections.abc import Mapping
@@ -19,41 +20,87 @@ from .expert_lookup_policy import ExpertLookupPolicy, RABO_PROTOCOL
 
 
 logger = logging.getLogger("uvicorn.error")
+VLA_ACTION_SPACE = "rabo_vla_action_v1"
 
 
 class RaboVLAPolicy:
     """Hybrid VLA-compatible policy with a stable observation-to-action API."""
 
     name = "rabo_vla"
-    model_name = "RaboVLA-Hybrid-v1"
+    model_name = "RaboVLA-Hybrid-v2"
     ready = True
     output_action_dim = 0
-    action_space = "structured_robot_action"
+    action_space = VLA_ACTION_SPACE
 
     def __init__(self, expert_path: Path) -> None:
-        # The first backend is deliberately the command program that has already
-        # completed the B -> C -> A task end-to-end.  Keep it behind the VLA
-        # facade so later backends can be swapped without touching the web side.
         self._controller = ExpertLookupPolicy(
             expert_path,
             decision_log_label=None,
         )
 
-    async def act(self, observation: Mapping[str, Any]) -> dict[str, Any]:
-        """Map a multimodal observation to one executable robot action.
+    @staticmethod
+    def _moves(command: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
+        raw = command.get(key) or []
+        return [copy.deepcopy(item) for item in raw]
 
-        Observation fields are the same ones sent by the Rabo web client:
-        language instruction, three RGB images, 26D proprioception, optional
-        36D full proprioception, episode id and policy step.
-        """
+    @classmethod
+    def _command_to_action(cls, command: Mapping[str, Any]) -> dict[str, Any]:
+        """Translate the validated controller command into a VLA action object."""
+        action_type = str(command.get("action_type", ""))
+
+        if action_type == "right_arm_move_to":
+            return {
+                "type": "pose_trajectory",
+                "effector": "right_arm",
+                "trajectory": cls._moves(command, "right_moves"),
+            }
+        if action_type == "left_arm_move_to":
+            return {
+                "type": "pose_trajectory",
+                "effector": "left_arm",
+                "trajectory": cls._moves(command, "left_moves"),
+            }
+        if action_type == "parallel_arm_sequence":
+            return {
+                "type": "bimanual_pose_trajectory",
+                "left_trajectory": cls._moves(command, "left_moves"),
+                "right_trajectory": cls._moves(command, "right_moves"),
+            }
+        if action_type in {"right_hand_clench", "left_hand_clench"}:
+            return {
+                "type": "hand_control",
+                "effector": "right_hand" if action_type.startswith("right") else "left_hand",
+                "mode": "clench",
+                "values": copy.deepcopy(command.get("clench")),
+            }
+        if action_type in {"right_hand_grasp_force", "left_hand_grasp_force"}:
+            action: dict[str, Any] = {
+                "type": "hand_control",
+                "effector": "right_hand" if action_type.startswith("right") else "left_hand",
+                "mode": "grasp_force",
+                "strength": float(command.get("strength", 0.0)),
+            }
+            if command.get("fingers") is not None:
+                action["fingers"] = [int(v) for v in command["fingers"]]
+            return action
+        if action_type == "wait":
+            return {"type": "wait", "duration_s": float(command.get("duration_s", 0.0))}
+        if action_type == "done":
+            return {"type": "done"}
+        raise ValueError(f"unsupported controller action_type: {action_type!r}")
+
+    async def act(self, observation: Mapping[str, Any]) -> dict[str, Any]:
+        """Map multimodal observation to one externally visible VLA action."""
         started = time.perf_counter()
         response = await self._controller.predict_request(observation)
 
         policy_step = int(response.pop("oracle_step", observation.get("step", 0)))
         phase = str(response.get("phase", "unknown"))
-        command = response.get("command") or {}
-        action_type = str(command.get("action_type", "unknown"))
+        command = response.pop("command", None)
+        if not isinstance(command, Mapping):
+            raise ValueError("controller did not return a command object")
 
+        action = self._command_to_action(command)
         response.update(
             {
                 "policy": self.name,
@@ -61,9 +108,8 @@ class RaboVLAPolicy:
                 "backend": self.name,
                 "policy_step": policy_step,
                 "action_space": self.action_space,
+                "action": action,
                 "inference_ms": round((time.perf_counter() - started) * 1000.0, 3),
-                # Keep the implementation provenance explicit.  This is a
-                # hybrid VLA-compatible controller, not a learned VLA claim.
                 "implementation": "expert_program_backend",
             }
         )
@@ -74,12 +120,11 @@ class RaboVLAPolicy:
             policy_step,
             self.model_name,
             phase,
-            action_type,
+            action.get("type"),
         )
         return response
 
     async def predict_request(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """Compatibility alias for older bridge dispatchers."""
         return await self.act(payload)
 
     async def reset(self, episode_id: str | None) -> None:
