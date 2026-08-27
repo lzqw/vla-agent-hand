@@ -21,9 +21,6 @@ class RaboDevices:
             raise RuntimeError("rabo_robocap is required in the Rabo runtime") from exc
 
         rabo = config.rabo
-        # Fixed-oracle structured commands do not require joint-limit metadata.
-        # Keep the exported SDK classes and build numeric-action specs lazily only
-        # if a future 26D VLA action is actually enabled.
         self._arm_class = LinkerArmA7
         self._left_hand_class = LinkerHandO6Left
         self._right_hand_class = LinkerHandO6Right
@@ -80,6 +77,7 @@ class RaboDevices:
         if limits.shape != (11, 2) or drive.shape != (11,) or not np.array_equal(drive, expected_drive):
             raise RuntimeError(f"Unexpected hand spec on {hand_class}")
         limits = limits.copy()
+        limits[:, 0] += np.float32(0.002)
         limits[:, 1] -= np.float32(0.002)
         return limits, drive
 
@@ -116,6 +114,75 @@ class RaboDevices:
         full_target = current_full + np.clip(full_target - current_full, -max_step, max_step)
         return np.clip(full_target, limits[:, 0], limits[:, 1]).astype(np.float32)
 
+    def _submit_joint_targets(
+        self, commands: list[tuple[str, object, np.ndarray]]
+    ) -> dict[str, bool]:
+        futures = {
+            name: self._command_executor.submit(
+                device.move_joints, target.tolist(), blocking=False
+            )
+            for name, device, target in commands
+        }
+        results = {
+            name: bool(future.result(timeout=2.0))
+            for name, future in futures.items()
+        }
+        if not all(results.values()):
+            self.stop()
+            raise RuntimeError(f"SDK rejected command: {results}")
+        return results
+
+    def command_full_joint_action(
+        self,
+        action: np.ndarray,
+        current_full_state: np.ndarray,
+        *,
+        max_arm_step: float,
+        max_hand_step: float,
+    ) -> dict[str, bool]:
+        """Execute a pure 36D full-joint target from the remote VLA.
+
+        Order is left_arm(7), right_arm(7), left_hand(11), right_hand(11).
+        The remote action remains the requested absolute joint position; this
+        executor only applies local joint limits and per-cycle slew-rate safety.
+        """
+        self._ensure_numeric_specs()
+        assert self._arm_limits is not None
+        assert self._left_hand_limits is not None
+        assert self._right_hand_limits is not None
+
+        action = np.asarray(action, dtype=np.float32)
+        current = np.asarray(current_full_state, dtype=np.float32)
+        if action.shape != (36,) or current.shape != (36,):
+            raise ValueError(f"Invalid full joint action/state: {action.shape}, {current.shape}")
+        if not np.isfinite(action).all() or not np.isfinite(current).all():
+            raise ValueError("full joint action/state contains non-finite values")
+
+        left_arm = np.clip(
+            self._slew(action[0:7], current[0:7], max_arm_step),
+            self._arm_limits[:, 0], self._arm_limits[:, 1],
+        )
+        right_arm = np.clip(
+            self._slew(action[7:14], current[7:14], max_arm_step),
+            self._arm_limits[:, 0], self._arm_limits[:, 1],
+        )
+        left_hand = np.clip(
+            self._slew(action[14:25], current[14:25], max_hand_step),
+            self._left_hand_limits[:, 0], self._left_hand_limits[:, 1],
+        )
+        right_hand = np.clip(
+            self._slew(action[25:36], current[25:36], max_hand_step),
+            self._right_hand_limits[:, 0], self._right_hand_limits[:, 1],
+        )
+        return self._submit_joint_targets(
+            [
+                ("left_arm", self.left_arm, left_arm),
+                ("right_arm", self.right_arm, right_arm),
+                ("left_hand", self.left_hand, left_hand),
+                ("right_hand", self.right_hand, right_hand),
+            ]
+        )
+
     def command_action(
         self,
         action: np.ndarray,
@@ -124,6 +191,7 @@ class RaboDevices:
         max_arm_step: float,
         max_hand_step: float,
     ) -> dict[str, bool]:
+        """Legacy 26D active-joint path retained for older learned policies."""
         self._ensure_numeric_specs()
         assert self._arm_limits is not None
         assert self._left_hand_limits is not None and self._left_hand_drive is not None
@@ -159,21 +227,7 @@ class RaboDevices:
                 (("left_hand", self.left_hand, left_hand),
                  ("right_hand", self.right_hand, right_hand))
             )
-
-        futures = {
-            name: self._command_executor.submit(
-                device.move_joints, target.tolist(), blocking=False
-            )
-            for name, device, target in commands
-        }
-        results = {
-            name: bool(future.result(timeout=2.0))
-            for name, future in futures.items()
-        }
-        if not all(results.values()):
-            self.stop()
-            raise RuntimeError(f"SDK rejected command: {results}")
-        return results
+        return self._submit_joint_targets(commands)
 
     @staticmethod
     def _move_joints_checked(arm, label: str, joints: list[float]) -> None:
