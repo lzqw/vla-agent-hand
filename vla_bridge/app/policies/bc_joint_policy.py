@@ -35,6 +35,7 @@ class BCJointVLAPolicy:
         *,
         initial_search: int = 250,
         forward_window: int = 80,
+        target_tolerance_rad: float = 0.01,
     ) -> None:
         self.model_dir = model_dir.expanduser().resolve()
         checkpoint_path = self.model_dir / "model.pt"
@@ -86,6 +87,7 @@ class BCJointVLAPolicy:
             hand_events_path,
             initial_search=initial_search,
             forward_window=forward_window,
+            target_tolerance_rad=target_tolerance_rad,
         )
 
     @staticmethod
@@ -219,6 +221,7 @@ class BCJointVLAPolicy:
             "hand_events_loaded": True,
             "hand_event_count": len(self.trajectory.events),
             "hand_events_file": str(self.trajectory.hand_events_path),
+            "target_tolerance_rad": self.trajectory.target_tolerance_rad,
             "device": "cpu",
             "dtype": "float32",
             "cuda_memory_allocated_mb": 0.0,

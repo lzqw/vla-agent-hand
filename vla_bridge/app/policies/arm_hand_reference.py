@@ -41,6 +41,7 @@ class ArmHandReference:
         *,
         initial_search: int = 250,
         forward_window: int = 80,
+        target_tolerance_rad: float = 0.01,
     ) -> None:
         self.reference_path = reference_path.expanduser().resolve()
         self.hand_events_path = hand_events_path.expanduser().resolve()
@@ -110,6 +111,9 @@ class ArmHandReference:
         self.num_frames = int(reference.shape[0])
         self.initial_search = max(1, min(int(initial_search), self.num_frames))
         self.forward_window = max(2, int(forward_window))
+        if not np.isfinite(target_tolerance_rad) or target_tolerance_rad <= 0.0:
+            raise ValueError("target_tolerance_rad must be positive and finite")
+        self.target_tolerance_rad = float(target_tolerance_rad)
         self.scale = np.maximum(np.std(reference, axis=0), np.float32(0.03)).astype(
             np.float32
         )
@@ -133,6 +137,15 @@ class ArmHandReference:
         local = int(np.argmin(distances))
         matched = start + local
         selected = max(previous, matched)
+
+        # Repeated/near-static reference frames can have identical matching
+        # cost. Once the live observation has actually reached the target that
+        # was returned for the previous cursor, advance one frame. This is
+        # observation-driven progress and never consults request.step.
+        if previous >= 0 and previous < self.num_frames - 1:
+            target_error = float(np.max(np.abs(self.target[previous] - current_arm)))
+            if target_error <= self.target_tolerance_rad:
+                selected = max(selected, previous + 1)
         selected = min(selected, self.num_frames - 1)
 
         # Report the distance for the selected frame (which can differ from the

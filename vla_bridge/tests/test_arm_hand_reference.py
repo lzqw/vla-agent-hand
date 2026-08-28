@@ -75,6 +75,22 @@ def test_alignment_is_observation_driven_and_events_fire_once(tmp_path):
     assert trajectory.align("episode-a", reference[0]).hand_command is not None
 
 
+def test_reached_target_advances_across_duplicate_reference_frames(tmp_path):
+    reference, reference_path, event_path = _artifacts(tmp_path)
+    reference[1] = reference[0]
+    target = np.concatenate([reference[1:], reference[-1:]], axis=0)
+    np.savez_compressed(
+        reference_path,
+        reference_arm_state=reference,
+        target_arm_state=target,
+    )
+    trajectory = ArmHandReference(reference_path, event_path, initial_search=6)
+    first = trajectory.align("episode-plateau", reference[0])
+    second = trajectory.align("episode-plateau", reference[0])
+    assert first.reference_index == 0
+    assert second.reference_index == 1
+
+
 def test_sparse_to_dense_mapping_is_phase_constrained_and_monotonic():
     reference = np.arange(12, dtype=np.float32)[:, None]
     query = reference[[0, 3, 7, 11]]

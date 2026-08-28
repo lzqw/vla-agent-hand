@@ -92,6 +92,7 @@ class Settings:
     hand_events_path: Path
     joint_initial_search: int
     joint_forward_window: int
+    joint_target_tolerance_rad: float
     bc_joint_model_dir: Path
     bc_model_dir: Path
     bc_shadow_only: bool
@@ -151,6 +152,7 @@ def load_settings() -> Settings:
         ).expanduser(),
         joint_initial_search=_positive_int("JOINT_INITIAL_SEARCH", 250),
         joint_forward_window=_positive_int("JOINT_FORWARD_WINDOW", 80),
+        joint_target_tolerance_rad=_positive_float("JOINT_TARGET_TOLERANCE_RAD", 0.01),
         bc_joint_model_dir=Path(
             os.getenv(
                 "BC_JOINT_MODEL_DIR",

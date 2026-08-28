@@ -39,12 +39,14 @@ class JointVLAPolicy:
         *,
         initial_search: int = 250,
         forward_window: int = 80,
+        target_tolerance_rad: float = 0.01,
     ) -> None:
         self.trajectory = ArmHandReference(
             reference_path,
             hand_events_path,
             initial_search=initial_search,
             forward_window=forward_window,
+            target_tolerance_rad=target_tolerance_rad,
         )
         self.reference_path = self.trajectory.reference_path
         self.hand_events_path = self.trajectory.hand_events_path
@@ -157,6 +159,7 @@ class JointVLAPolicy:
             "hand_event_count": len(self.trajectory.events),
             "hand_events_file": str(self.hand_events_path),
             "uses_request_step_as_input": False,
+            "target_tolerance_rad": self.trajectory.target_tolerance_rad,
             "implementation": "dense_arm_reference_with_expert_hand_scheduler",
             "device": "cpu",
             "dtype": "float32",

@@ -68,6 +68,7 @@ JOINT_REFERENCE_PATH=/home/carla/vla_bridge/data/joint/arm_hand_reference_v1.npz
 HAND_EVENTS_PATH=/home/carla/vla_bridge/data/joint/hand_events_v1.json
 JOINT_INITIAL_SEARCH=250
 JOINT_FORWARD_WINDOW=80
+JOINT_TARGET_TOLERANCE_RAD=0.01
 EOF
 ```
 
