@@ -1,9 +1,4 @@
-"""Arm-only joint VLA backed by a dense successful trajectory.
-
-The policy aligns each live observation to the dense 14D A7 arm trajectory and
-returns a short event-aware lookahead target. O6 hand actions remain the
-validated one-shot clench/grasp-force/wait commands.
-"""
+"""Arm-only joint VLA with dense trajectory alignment and robust O6 events."""
 
 from __future__ import annotations
 
@@ -27,7 +22,7 @@ class JointVLAPolicy:
     """Observation-aligned policy returning 14D bimanual arm joint targets."""
 
     name = "joint_vla"
-    model_name = "RaboVLA-Joint-v2"
+    model_name = "RaboVLA-Joint-v3"
     ready = True
     output_action_dim = ARM_DIM
     action_space = ACTION_SPACE
@@ -41,6 +36,9 @@ class JointVLAPolicy:
         forward_window: int = 80,
         target_tolerance_rad: float = 0.025,
         lookahead_frames: int = 3,
+        hand_event_tolerance_rad: float = 0.020,
+        hand_event_settle_cycles: int = 2,
+        grasp_force_repeats: int = 2,
     ) -> None:
         self.trajectory = ArmHandReference(
             reference_path,
@@ -49,6 +47,9 @@ class JointVLAPolicy:
             forward_window=forward_window,
             target_tolerance_rad=target_tolerance_rad,
             lookahead_frames=lookahead_frames,
+            hand_event_tolerance_rad=hand_event_tolerance_rad,
+            hand_event_settle_cycles=hand_event_settle_cycles,
+            grasp_force_repeats=grasp_force_repeats,
         )
         self.reference_path = self.trajectory.reference_path
         self.hand_events_path = self.trajectory.hand_events_path
@@ -104,12 +105,18 @@ class JointVLAPolicy:
         )
 
         logger.info(
-            "[JOINT-VLA] episode=%s ref=%d target=%d/%d match=%.6f hand=%s done=%s",
+            "[JOINT-VLA] episode=%s ref=%d target=%d/%d match=%.6f "
+            "event=%s frame=%s err=%s settle=%d repeat=%d hand=%s done=%s",
             episode_id,
             aligned.reference_index,
             aligned.action_reference_index,
             self.num_frames,
             aligned.match_distance,
+            aligned.hand_event_id,
+            aligned.hand_event_frame,
+            None if aligned.hand_event_error_rad is None else round(aligned.hand_event_error_rad, 5),
+            aligned.hand_event_settle_count,
+            aligned.hand_event_repeat_index,
             hand_type,
             aligned.done,
         )
@@ -131,11 +138,19 @@ class JointVLAPolicy:
                 "reference_frames": self.num_frames,
                 "match_distance": round(aligned.match_distance, 7),
                 "hand_event_id": aligned.hand_event_id,
+                "hand_event_frame": aligned.hand_event_frame,
+                "hand_event_error_rad": (
+                    None
+                    if aligned.hand_event_error_rad is None
+                    else round(aligned.hand_event_error_rad, 7)
+                ),
+                "hand_event_settle_count": aligned.hand_event_settle_count,
+                "hand_event_repeat_index": aligned.hand_event_repeat_index,
                 "lookahead_frames": self.trajectory.lookahead_frames,
                 "uses_request_step_as_input": False,
             },
             "inference_ms": round((time.perf_counter() - started) * 1000.0, 3),
-            "implementation": "dense_arm_reference_with_event_aware_lookahead",
+            "implementation": "dense_arm_reference_with_converged_hand_events",
         }
 
     async def reset(self, episode_id: str | None) -> None:
@@ -164,7 +179,10 @@ class JointVLAPolicy:
             "uses_request_step_as_input": False,
             "target_tolerance_rad": self.trajectory.target_tolerance_rad,
             "lookahead_frames": self.trajectory.lookahead_frames,
-            "implementation": "dense_arm_reference_with_event_aware_lookahead",
+            "hand_event_tolerance_rad": self.trajectory.hand_event_tolerance_rad,
+            "hand_event_settle_cycles": self.trajectory.hand_event_settle_cycles,
+            "grasp_force_repeats": self.trajectory.grasp_force_repeats,
+            "implementation": "dense_arm_reference_with_converged_hand_events",
             "device": "cpu",
             "dtype": "float32",
             "cuda_memory_allocated_mb": 0.0,
