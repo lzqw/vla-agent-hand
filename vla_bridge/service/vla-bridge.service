@@ -14,7 +14,8 @@ Environment=VLA_BRIDGE_INFERENCE_TIMEOUT_S=30
 # without editing this unit again.
 Environment=VLA_POLICY=rabo_vla
 Environment=EXPERT_PROGRAM_PATH=%h/vla_bridge/data/expert_program.json
-Environment=JOINT_REFERENCE_PATH=%h/vla_bridge/data/joint/reference_v1.npz
+Environment=JOINT_REFERENCE_PATH=%h/vla_bridge/data/joint/arm_hand_reference_v1.npz
+Environment=HAND_EVENTS_PATH=%h/vla_bridge/data/joint/hand_events_v1.json
 Environment=BC_JOINT_MODEL_DIR=%h/vla_bridge/models/rabo_bc_joint_v1
 EnvironmentFile=-%h/.config/vla-bridge/runtime.env
 ExecStart=%h/vla_bridge/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8765 --ws-max-size 16777216 --proxy-headers --forwarded-allow-ips=127.0.0.1

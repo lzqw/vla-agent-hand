@@ -1,11 +1,10 @@
-"""Behavior-cloned VLA policy returning only 36D joint-position actions."""
+"""Behavior-cloned VLA policy for arms plus an Expert hand scheduler."""
 
 from __future__ import annotations
 
 import base64
 import io
 import logging
-import threading
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -13,22 +12,30 @@ from typing import Any
 
 import numpy as np
 
+from .arm_hand_reference import ACTION_SPACE, ARM_DIM, ArmHandReference
 from .base import PolicyInputError, PolicyNotReadyError
 from .expert_lookup_policy import RABO_PROTOCOL, REQUIRED_CAMERAS
 
 
 logger = logging.getLogger("uvicorn.error")
-ACTION_SPACE = "joint_position_36d"
 
 
 class BCJointVLAPolicy:
     name = "bc_joint_vla"
     model_name = "RaboBC-Joint-v1"
     ready = True
-    output_action_dim = 36
+    output_action_dim = ARM_DIM
     action_space = ACTION_SPACE
 
-    def __init__(self, model_dir: Path) -> None:
+    def __init__(
+        self,
+        model_dir: Path,
+        reference_path: Path,
+        hand_events_path: Path,
+        *,
+        initial_search: int = 250,
+        forward_window: int = 80,
+    ) -> None:
         self.model_dir = model_dir.expanduser().resolve()
         checkpoint_path = self.model_dir / "model.pt"
         config_path = self.model_dir / "config.json"
@@ -51,7 +58,14 @@ class BCJointVLAPolicy:
         except TypeError:
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
-        self.model = BCJointModel()
+        action_dim = int(checkpoint.get("action_dim", -1))
+        proprio_dim = int(checkpoint.get("proprio_dim", -1))
+        if action_dim != ARM_DIM or proprio_dim != 36:
+            raise PolicyNotReadyError(
+                f"BC checkpoint must be 36D proprio -> {ARM_DIM}D arms, "
+                f"got {proprio_dim}D -> {action_dim}D"
+            )
+        self.model = BCJointModel(proprio_dim=proprio_dim, action_dim=action_dim)
         self.model.load_state_dict(checkpoint["model_state_dict"], strict=True)
         self.model.eval()
         self.state_mean = checkpoint["state_mean"].float()
@@ -61,8 +75,18 @@ class BCJointVLAPolicy:
         image_size = checkpoint.get("image_size", [128, 128])
         self.image_height = int(image_size[0])
         self.image_width = int(image_size[1])
-        self._done_counts: dict[str, int] = {}
-        self._lock = threading.Lock()
+        if tuple(self.state_mean.shape) != (36,) or tuple(self.state_std.shape) != (36,):
+            raise PolicyNotReadyError("BC state normalization must be 36D")
+        if tuple(self.target_mean.shape) != (ARM_DIM,) or tuple(self.target_std.shape) != (
+            ARM_DIM,
+        ):
+            raise PolicyNotReadyError(f"BC target normalization must be {ARM_DIM}D")
+        self.trajectory = ArmHandReference(
+            reference_path,
+            hand_events_path,
+            initial_search=initial_search,
+            forward_window=forward_window,
+        )
 
     @staticmethod
     def _vector(value: Any, name: str, expected: int) -> np.ndarray:
@@ -128,19 +152,22 @@ class BCJointVLAPolicy:
         progress = float(progress_tensor.item())
         if not np.isfinite(action).all() or not np.isfinite(progress):
             raise RuntimeError("BC model produced non-finite output")
+        if action.shape != (ARM_DIM,):
+            raise RuntimeError(f"BC model produced action shape {action.shape}, expected ({ARM_DIM},)")
 
-        with self._lock:
-            count = self._done_counts.get(episode_id, 0)
-            count = count + 1 if progress >= 0.995 else 0
-            self._done_counts[episode_id] = count
-            done = count >= 3
+        aligned = self.trajectory.align(episode_id, current[:ARM_DIM])
+        hand_type = (
+            aligned.hand_command.get("action_type") if aligned.hand_command is not None else None
+        )
 
         logger.info(
-            "[BC-JOINT] episode=%s progress=%.4f done=%s action_norm=%.4f",
+            "[BC-JOINT] episode=%s ref=%d progress=%.4f hand=%s done=%s action_norm=%.4f",
             episode_id,
+            aligned.reference_index,
             progress,
-            done,
-            float(np.linalg.norm(action - current)),
+            hand_type,
+            aligned.done,
+            float(np.linalg.norm(action - current[:ARM_DIM])),
         )
         return {
             "type": "action",
@@ -152,9 +179,14 @@ class BCJointVLAPolicy:
             "backend": self.name,
             "action_space": self.action_space,
             "action": action.tolist(),
-            "done": done,
+            "hand_command": aligned.hand_command,
+            "done": aligned.done,
             "prediction": {
                 "progress": round(progress, 6),
+                "reference_index": aligned.reference_index,
+                "reference_frames": self.trajectory.num_frames,
+                "match_distance": round(aligned.match_distance, 7),
+                "hand_event_id": aligned.hand_event_id,
                 "uses_request_step_as_input": False,
             },
             "inference_ms": round((time.perf_counter() - started) * 1000.0, 3),
@@ -162,11 +194,7 @@ class BCJointVLAPolicy:
         }
 
     async def reset(self, episode_id: str | None) -> None:
-        with self._lock:
-            if episode_id is None:
-                self._done_counts.clear()
-            else:
-                self._done_counts.pop(episode_id, None)
+        self.trajectory.reset(episode_id)
 
     def health(self) -> dict[str, Any]:
         return {
@@ -185,6 +213,12 @@ class BCJointVLAPolicy:
             "uses_request_step_as_input": False,
             "implementation": "single_episode_behavior_cloning",
             "model_dir": str(self.model_dir),
+            "reference_loaded": True,
+            "reference_frames": self.trajectory.num_frames,
+            "reference_file": str(self.trajectory.reference_path),
+            "hand_events_loaded": True,
+            "hand_event_count": len(self.trajectory.events),
+            "hand_events_file": str(self.trajectory.hand_events_path),
             "device": "cpu",
             "dtype": "float32",
             "cuda_memory_allocated_mb": 0.0,

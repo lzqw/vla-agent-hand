@@ -89,6 +89,7 @@ class Settings:
     policy: str
     expert_program_path: Path
     joint_reference_path: Path
+    hand_events_path: Path
     joint_initial_search: int
     joint_forward_window: int
     bc_joint_model_dir: Path
@@ -139,7 +140,13 @@ def load_settings() -> Settings:
         joint_reference_path=Path(
             os.getenv(
                 "JOINT_REFERENCE_PATH",
-                str(bridge / "data" / "joint" / "reference_v1.npz"),
+                str(bridge / "data" / "joint" / "arm_hand_reference_v1.npz"),
+            )
+        ).expanduser(),
+        hand_events_path=Path(
+            os.getenv(
+                "HAND_EVENTS_PATH",
+                str(bridge / "data" / "joint" / "hand_events_v1.json"),
             )
         ).expanduser(),
         joint_initial_search=_positive_int("JOINT_INITIAL_SEARCH", 250),

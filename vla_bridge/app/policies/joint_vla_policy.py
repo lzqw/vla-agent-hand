@@ -1,15 +1,13 @@
-"""Pure joint-position VLA facade backed by a recorded successful trajectory.
+"""Arm-only joint VLA backed by a dense successful trajectory.
 
-This policy intentionally outputs only 36D full joint-position targets.  It does
-not invent an A7 kinematic model on the 4080 server.  Instead it uses the joint
-trajectory measured after the official Rabo SDK solved/executed the expert
-Cartesian path, and aligns the live proprioceptive observation to that reference.
+The policy returns the next recorded 14D A7 arm target. O6 hand motion is never
+regressed as joint position; one-shot hand commands are replayed through the
+already validated clench/grasp-force SDK path.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -17,65 +15,40 @@ from typing import Any
 
 import numpy as np
 
+from .arm_hand_reference import ACTION_SPACE, ARM_DIM, ArmHandReference
 from .base import PolicyInputError
 from .expert_lookup_policy import RABO_PROTOCOL, REQUIRED_CAMERAS
 
 
 logger = logging.getLogger("uvicorn.error")
-ACTION_SPACE = "joint_position_36d"
 
 
 class JointVLAPolicy:
-    """Observation-aligned reference policy returning full 36D joint targets."""
+    """Observation-aligned reference policy returning 14D arm targets."""
 
     name = "joint_vla"
     model_name = "RaboVLA-Joint-v1"
     ready = True
-    output_action_dim = 36
+    output_action_dim = ARM_DIM
     action_space = ACTION_SPACE
 
     def __init__(
         self,
         reference_path: Path,
+        hand_events_path: Path,
         *,
         initial_search: int = 250,
         forward_window: int = 80,
     ) -> None:
-        self.reference_path = reference_path.expanduser().resolve()
-        try:
-            data = np.load(self.reference_path, allow_pickle=False)
-        except FileNotFoundError as exc:
-            raise ValueError(f"joint reference not found: {self.reference_path}") from exc
-
-        required = {"reference_full_state", "target_full_state"}
-        missing = required.difference(data.files)
-        if missing:
-            raise ValueError(f"joint reference missing arrays: {sorted(missing)}")
-
-        reference = np.asarray(data["reference_full_state"], dtype=np.float32)
-        target = np.asarray(data["target_full_state"], dtype=np.float32)
-        if reference.ndim != 2 or reference.shape[1] != 36:
-            raise ValueError(f"reference_full_state must be [N,36], got {reference.shape}")
-        if target.shape != reference.shape:
-            raise ValueError(
-                f"target_full_state must match reference shape {reference.shape}, got {target.shape}"
-            )
-        if len(reference) < 2 or not np.isfinite(reference).all() or not np.isfinite(target).all():
-            raise ValueError("joint reference contains invalid values")
-
-        self.reference = reference
-        self.target = target
-        self.num_frames = int(reference.shape[0])
-        self.initial_search = max(1, min(int(initial_search), self.num_frames))
-        self.forward_window = max(2, int(forward_window))
-
-        # Normalize matching distances so large-range arm joints do not completely
-        # dominate low-range hand joints.  Keep a floor for almost-static joints.
-        scale = np.std(reference, axis=0).astype(np.float32)
-        self.scale = np.maximum(scale, np.float32(0.03))
-
-        self._cursor: dict[str, int] = {}
-        self._lock = threading.Lock()
+        self.trajectory = ArmHandReference(
+            reference_path,
+            hand_events_path,
+            initial_search=initial_search,
+            forward_window=forward_window,
+        )
+        self.reference_path = self.trajectory.reference_path
+        self.hand_events_path = self.trajectory.hand_events_path
+        self.num_frames = self.trajectory.num_frames
 
     @staticmethod
     def _vector(value: Any, name: str, expected: int) -> np.ndarray:
@@ -102,30 +75,6 @@ class JointVLAPolicy:
             if not isinstance(image.get("data"), str) or not image["data"]:
                 raise PolicyInputError(f"images.{name}.data must be non-empty")
 
-    def _match_index(self, episode_id: str, current: np.ndarray) -> tuple[int, float]:
-        with self._lock:
-            if episode_id not in self._cursor:
-                start = 0
-                end = self.initial_search
-                previous = 0
-            else:
-                previous = self._cursor[episode_id]
-                start = max(0, previous - 2)
-                end = min(self.num_frames, previous + self.forward_window)
-
-            candidates = self.reference[start:end]
-            normalized = (candidates - current[None, :]) / self.scale[None, :]
-            distances = np.mean(normalized * normalized, axis=1)
-            local = int(np.argmin(distances))
-            matched = start + local
-
-            # The observation decides alignment, but the online cursor prevents
-            # oscillating backwards on near-identical wait/grasp frames.
-            selected = max(previous, matched)
-            selected = min(selected, self.num_frames - 1)
-            self._cursor[episode_id] = min(selected + 1, self.num_frames - 1)
-            return selected, float(distances[local])
-
     async def act(self, observation: Mapping[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
         if observation.get("protocol") != RABO_PROTOCOL:
@@ -147,17 +96,19 @@ class JointVLAPolicy:
         current = self._vector(observation.get("full_state"), "full_state", 36)
         self._validate_images(observation.get("images"))
 
-        index, distance = self._match_index(episode_id, current)
-        action = self.target[index].astype(np.float32, copy=True)
-        done = bool(index >= self.num_frames - 1)
+        aligned = self.trajectory.align(episode_id, current[:ARM_DIM])
+        hand_type = (
+            aligned.hand_command.get("action_type") if aligned.hand_command is not None else None
+        )
 
         logger.info(
-            "[JOINT-VLA] episode=%s ref=%d/%d match=%.6f done=%s",
+            "[JOINT-VLA] episode=%s ref=%d/%d match=%.6f hand=%s done=%s",
             episode_id,
-            index,
+            aligned.reference_index,
             self.num_frames,
-            distance,
-            done,
+            aligned.match_distance,
+            hand_type,
+            aligned.done,
         )
         return {
             "type": "action",
@@ -168,23 +119,22 @@ class JointVLAPolicy:
             "model": self.model_name,
             "backend": self.name,
             "action_space": self.action_space,
-            "action": action.tolist(),
-            "done": done,
+            "action": aligned.target_arm.tolist(),
+            "hand_command": aligned.hand_command,
+            "done": aligned.done,
             "prediction": {
-                "reference_index": index,
+                "reference_index": aligned.reference_index,
                 "reference_frames": self.num_frames,
-                "match_distance": round(distance, 7),
+                "match_distance": round(aligned.match_distance, 7),
+                "hand_event_id": aligned.hand_event_id,
+                "uses_request_step_as_input": False,
             },
             "inference_ms": round((time.perf_counter() - started) * 1000.0, 3),
-            "implementation": "recorded_sdk_ik_joint_reference",
+            "implementation": "dense_arm_reference_with_expert_hand_scheduler",
         }
 
     async def reset(self, episode_id: str | None) -> None:
-        with self._lock:
-            if episode_id is None:
-                self._cursor.clear()
-            else:
-                self._cursor.pop(episode_id, None)
+        self.trajectory.reset(episode_id)
 
     def health(self) -> dict[str, Any]:
         return {
@@ -203,7 +153,11 @@ class JointVLAPolicy:
             "reference_loaded": True,
             "reference_frames": self.num_frames,
             "reference_file": str(self.reference_path),
-            "implementation": "recorded_sdk_ik_joint_reference",
+            "hand_events_loaded": True,
+            "hand_event_count": len(self.trajectory.events),
+            "hand_events_file": str(self.hand_events_path),
+            "uses_request_step_as_input": False,
+            "implementation": "dense_arm_reference_with_expert_hand_scheduler",
             "device": "cpu",
             "dtype": "float32",
             "cuda_memory_allocated_mb": 0.0,

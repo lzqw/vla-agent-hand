@@ -1,68 +1,87 @@
-# 纯关节动作版 RaboVLA
+# 14D 双臂关节动作 + Expert 手事件
 
-现在两套策略对网页端都只返回：
+`joint_vla` 和 `bc_joint_vla` 对网页端使用同一协议：
 
 ```json
 {
   "type": "action",
-  "action_space": "joint_position_36d",
-  "action": [36个float]
+  "action_space": "arm_joint_position_14d",
+  "action": ["left_arm(7)", "right_arm(7)"],
+  "hand_command": null,
+  "done": false
 }
 ```
 
-36维顺序固定：`left_arm(7) + right_arm(7) + left_hand(11) + right_hand(11)`。
+O6 手不使用 `move_joints`。抓取、力控、等待和释放继续复用成功
+command Expert 中的 `clench / grasp_force / wait` 命令。某个事件到达时，
+`hand_command` 为原始 command；每个 episode 只触发一次，reset 会清空轨迹 cursor
+和 fired-event 集合。
 
-## A. 无训练：joint_vla
+## 数据准备
 
-不在4080伪造A7 URDF/DH。使用官方Rabo SDK在成功Expert轨迹中实际求解/执行后记录的36D关节轨迹，当前 `full_state` 与参考轨迹前向匹配，然后输出下一帧关节目标。
+需要两份成功数据：
 
-准备单条LeRobot episode bundle后：
+- 850 帧、5 Hz 的连续 episode：提供双臂下一帧 14D 监督目标和三路 RGB。
+- 59 步 command Expert：提供执行前 36D 状态和已验证的 O6 手动作时机。
 
 ```bash
-cd ~/vla_bridge
-. .venv/bin/activate
-pip install -r requirements.txt
 python -m tools.prepare_joint_dataset \
   ~/vla_bridge/data/bc/rabo_joint_bc_episode_000001 \
-  --episode-index 000001
+  --episode-index 000001 \
+  --expert-steps ~/vla_bridge/data/bc/expert_data/episode_000000/steps.jsonl
 ```
 
-得到：
+输出：
 
 ```text
-~/vla_bridge/data/joint/reference_v1.npz
+~/vla_bridge/data/joint/arm_hand_reference_v1.npz
+~/vla_bridge/data/joint/hand_events_v1.json
 ~/vla_bridge/data/joint/bc_episode_v1.npz
+~/vla_bridge/data/joint/dataset_meta.json
 ```
 
-切换：
+工具用 59 步 observation 的前 14D arm state 对 850 帧轨迹做单调 DTW
+最近邻对齐，并只把 hand/wait command 写入事件表。训练 target 定义为：
+
+```text
+target_arm_state[t] = observation.full_state[t+1, :14]
+```
+
+最后一帧 target 等于最后一帧 arm state。
+
+## joint_vla（不训练）
+
+```text
+live full_state[:14]
+  -> dense reference 前向窗口匹配
+  -> next arm joints[14]
+  + optional one-shot hand_command
+```
+
+它不读取 request.step，也不在 4080 实现 A7 IK。
 
 ```bash
-mkdir -p ~/.config/vla-bridge
 cat > ~/.config/vla-bridge/runtime.env <<'EOF'
 VLA_POLICY=joint_vla
-JOINT_REFERENCE_PATH=/home/carla/vla_bridge/data/joint/reference_v1.npz
+JOINT_REFERENCE_PATH=/home/carla/vla_bridge/data/joint/arm_hand_reference_v1.npz
+HAND_EVENTS_PATH=/home/carla/vla_bridge/data/joint/hand_events_v1.json
+JOINT_INITIAL_SEARCH=250
+JOINT_FORWARD_WINDOW=80
 EOF
-systemctl --user restart vla-bridge.service
-curl http://127.0.0.1:8765/healthz
 ```
 
-health 应显示 `policy=joint_vla`、`action_space=joint_position_36d`、`output_action_dim=36`。
+## bc_joint_vla（监督训练）
 
-## B. 训练：bc_joint_vla
-
-训练的是：
+模型学习：
 
 ```text
-3 RGB + current full_state[36] -> next full_state[36]
+3 RGB + current full_state[36] -> next arm joints[14]
 ```
 
-请求中的 `step` 不进入神经网络。
-
-CPU训练示例：
+request.step 不进入网络，O6 的 22D 手关节也不是回归目标。手事件仍由同一个
+`hand_events_v1.json` 调度。
 
 ```bash
-cd ~/vla_bridge
-. .venv/bin/activate
 python -m app.policies.bc_joint.train \
   --cache ~/vla_bridge/data/joint/bc_episode_v1.npz \
   --output-dir ~/vla_bridge/models/rabo_bc_joint_v1 \
@@ -72,29 +91,16 @@ python -m app.policies.bc_joint.train \
   --batch-size 32
 ```
 
-训练完成后：
+## 首次网页验证
+
+先同时关闭 numeric arm 和 remote hand 执行：
 
 ```bash
-cat > ~/.config/vla-bridge/runtime.env <<'EOF'
-VLA_POLICY=bc_joint_vla
-BC_JOINT_MODEL_DIR=/home/carla/vla_bridge/models/rabo_bc_joint_v1
-EOF
-systemctl --user restart vla-bridge.service
-curl http://127.0.0.1:8765/healthz
+VLA_EXECUTE_ACTIONS=0 \
+VLA_EXECUTE_REMOTE_COMMANDS=0 \
+VLA_MAX_CYCLES=5 \
+python main.py
 ```
 
-health 应显示 `policy=bc_joint_vla`、`model=RaboBC-Joint-v1`、`action_space=joint_position_36d`。
-
-## 网页端
-
-新版网页端默认：
-
-```text
-VLA_EXECUTE_ACTIONS=1
-VLA_EXECUTE_REMOTE_COMMANDS=0
-VLA_CONTROL_HZ=5
-```
-
-收到36D action后按四个设备切片，通过官方 `move_joints(..., blocking=False)` 执行，并在本地做 joint-limit 与每周期 slew-rate 安全限制。
-
-旧 `rabo_vla` structured action 仍留作回退，但两套新策略都不会输出 mixed command。
+确认 `response_kind=joint_action`、`action_type=arm_joint_position_14d`、action
+长度为 14，且 `hand_command` 仅在映射事件处出现后，再分别开启两个执行开关。

@@ -127,3 +127,11 @@ VLA_POLICY=rabo_vla
 `BC_SHADOW_ONLY=1` 与 Expert backend 对照，且不会自动替换生产 `rabo_vla`。数据格式、训练
 命令、指标和 shadow 切换方式见
 [`app/policies/bc/README.md`](app/policies/bc/README.md)。
+
+## 14D arm-joint policies
+
+`joint_vla` 与 `bc_joint_vla` 使用统一的
+`arm_joint_position_14d + optional hand_command` 协议。双臂输出连续 14D
+关节目标，O6 手继续执行成功 command Expert 中的 clench/grasp-force/wait
+语义；两套策略都不读取 request.step，也不回归 O6 的 22D 手关节。
+数据对齐、训练和 shadow 验证流程见 [JOINT_VLA_CN.md](JOINT_VLA_CN.md)。

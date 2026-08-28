@@ -27,13 +27,13 @@ class SharedImageEncoder(nn.Module):
 
 
 class BCJointModel(nn.Module):
-    """Small multimodal BC network: 3 RGB + 36D proprio -> next 36D joints."""
+    """Small multimodal BC network: 3 RGB + 36D proprio -> next 14D arm joints."""
 
     def __init__(
         self,
         *,
         proprio_dim: int = 36,
-        action_dim: int = 36,
+        action_dim: int = 14,
         image_embedding_dim: int = 96,
         proprio_embedding_dim: int = 96,
         hidden_dim: int = 256,

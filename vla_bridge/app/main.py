@@ -119,13 +119,20 @@ async def _load_policy():
 
         return JointVLAPolicy(
             settings.joint_reference_path,
+            settings.hand_events_path,
             initial_search=settings.joint_initial_search,
             forward_window=settings.joint_forward_window,
         )
     if settings.policy == "bc_joint_vla":
         from .policies.bc_joint_policy import BCJointVLAPolicy
 
-        return BCJointVLAPolicy(settings.bc_joint_model_dir)
+        return BCJointVLAPolicy(
+            settings.bc_joint_model_dir,
+            settings.joint_reference_path,
+            settings.hand_events_path,
+            initial_search=settings.joint_initial_search,
+            forward_window=settings.joint_forward_window,
+        )
     if settings.policy == "bc_vla":
         # Keep torch/Pillow completely unloaded unless BC is explicitly selected.
         from .policies.bc_vla_policy import BCVLAPolicy

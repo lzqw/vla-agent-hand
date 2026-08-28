@@ -1,8 +1,8 @@
 """Train a small single-demonstration behavior-cloned joint policy.
 
-This is intentionally a fixed-scene baseline.  It learns a real neural mapping
-from three RGB views + current 36D proprioception to the next 36D full joint
-position target.  Request.step is never an input feature.
+This is intentionally a fixed-scene baseline. It learns a real neural mapping
+from three RGB views + current 36D proprioception to the next 14D A7 arm joint
+position target. O6 hand joints and request.step are never model inputs/targets.
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ class EpisodeDataset(Dataset):
             index = int(self.indices[item % len(self.indices)])
 
         full = torch.from_numpy(self.cache["full_state"][index].astype(np.float32))
-        target = torch.from_numpy(self.cache["target_full_state"][index].astype(np.float32))
+        target = torch.from_numpy(self.cache["target_arm_state"][index].astype(np.float32))
         if self.augment:
             full = full + torch.randn_like(full) * random.uniform(0.0, 0.003)
 
@@ -109,7 +109,7 @@ class EpisodeDataset(Dataset):
 
 def _load_cache(path: Path) -> dict[str, np.ndarray]:
     raw = np.load(path, allow_pickle=False)
-    required = {"full_state", "target_full_state", "progress", *CAMERA_KEYS}
+    required = {"full_state", "target_arm_state", "progress", *CAMERA_KEYS}
     missing = required.difference(raw.files)
     if missing:
         raise ValueError(f"BC cache missing arrays: {sorted(missing)}")
@@ -117,8 +117,8 @@ def _load_cache(path: Path) -> dict[str, np.ndarray]:
     n = len(cache["full_state"])
     if cache["full_state"].shape != (n, 36):
         raise ValueError(f"full_state must be [N,36], got {cache['full_state'].shape}")
-    if cache["target_full_state"].shape != (n, 36):
-        raise ValueError("target_full_state must be [N,36]")
+    if cache["target_arm_state"].shape != (n, 14):
+        raise ValueError("target_arm_state must be [N,14]")
     for key in CAMERA_KEYS:
         if len(cache[key]) != n or cache[key].ndim != 4 or cache[key].shape[-1] != 3:
             raise ValueError(f"{key} must be [N,H,W,3], got {cache[key].shape}")
@@ -205,8 +205,8 @@ def main() -> None:
 
     state_mean = cache["full_state"][train_indices].mean(axis=0).astype(np.float32)
     state_std = cache["full_state"][train_indices].std(axis=0).astype(np.float32)
-    target_mean = cache["target_full_state"][train_indices].mean(axis=0).astype(np.float32)
-    target_std = cache["target_full_state"][train_indices].std(axis=0).astype(np.float32)
+    target_mean = cache["target_arm_state"][train_indices].mean(axis=0).astype(np.float32)
+    target_std = cache["target_arm_state"][train_indices].std(axis=0).astype(np.float32)
     state_std = np.maximum(state_std, 0.02).astype(np.float32)
     target_std = np.maximum(target_std, 0.02).astype(np.float32)
 
@@ -245,7 +245,7 @@ def main() -> None:
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
     all_loader = DataLoader(all_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
-    model = BCJointModel().to(device)
+    model = BCJointModel(proprio_dim=36, action_dim=14).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     action_loss_fn = nn.SmoothL1Loss(beta=0.5)
     progress_loss_fn = nn.MSELoss()
@@ -310,7 +310,7 @@ def main() -> None:
         "target_mean": torch.from_numpy(target_mean),
         "target_std": torch.from_numpy(target_std),
         "image_size": list(cache[CAMERA_KEYS[0]].shape[1:3]),
-        "action_dim": 36,
+        "action_dim": 14,
         "proprio_dim": 36,
         "camera_keys": list(CAMERA_KEYS),
     }
@@ -334,15 +334,16 @@ def main() -> None:
     config = {
         "model": "RaboBC-Joint-v1",
         "model_family": "behavior_cloning",
-        "action_space": "joint_position_36d",
-        "action_dim": 36,
+        "action_space": "arm_joint_position_14d",
+        "action_dim": 14,
         "proprio_dim": 36,
         "vision_inputs": 3,
         "camera_keys": list(CAMERA_KEYS),
         "trained_from_episodes": 1,
         "training_frames": n,
         "uses_request_step_as_input": False,
-        "action_definition": "next full 36D joint position",
+        "action_definition": "next left_arm(7) + right_arm(7) joint position",
+        "controls_o6_hand_joints": False,
     }
     (output / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     print(json.dumps({**config, **asdict(metrics)}, indent=2), flush=True)
