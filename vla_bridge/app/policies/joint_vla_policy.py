@@ -1,8 +1,8 @@
 """Arm-only joint VLA backed by a dense successful trajectory.
 
-The policy returns the next recorded 14D A7 arm target. O6 hand motion is never
-regressed as joint position; one-shot hand commands are replayed through the
-already validated clench/grasp-force SDK path.
+The policy aligns each live observation to the dense 14D A7 arm trajectory and
+returns a short event-aware lookahead target. O6 hand actions remain the
+validated one-shot clench/grasp-force/wait commands.
 """
 
 from __future__ import annotations
@@ -24,10 +24,10 @@ logger = logging.getLogger("uvicorn.error")
 
 
 class JointVLAPolicy:
-    """Observation-aligned reference policy returning 14D arm targets."""
+    """Observation-aligned policy returning 14D bimanual arm joint targets."""
 
     name = "joint_vla"
-    model_name = "RaboVLA-Joint-v1"
+    model_name = "RaboVLA-Joint-v2"
     ready = True
     output_action_dim = ARM_DIM
     action_space = ACTION_SPACE
@@ -39,7 +39,8 @@ class JointVLAPolicy:
         *,
         initial_search: int = 250,
         forward_window: int = 80,
-        target_tolerance_rad: float = 0.01,
+        target_tolerance_rad: float = 0.025,
+        lookahead_frames: int = 3,
     ) -> None:
         self.trajectory = ArmHandReference(
             reference_path,
@@ -47,6 +48,7 @@ class JointVLAPolicy:
             initial_search=initial_search,
             forward_window=forward_window,
             target_tolerance_rad=target_tolerance_rad,
+            lookahead_frames=lookahead_frames,
         )
         self.reference_path = self.trajectory.reference_path
         self.hand_events_path = self.trajectory.hand_events_path
@@ -92,8 +94,6 @@ class JointVLAPolicy:
         if not isinstance(instruction, str) or not instruction.strip():
             raise PolicyInputError("instruction must be non-empty")
 
-        # Keep both observation modalities validated even though v1 trajectory
-        # alignment currently uses proprioception for its deterministic matching.
         self._vector(observation.get("state"), "state", 26)
         current = self._vector(observation.get("full_state"), "full_state", 36)
         self._validate_images(observation.get("images"))
@@ -104,9 +104,10 @@ class JointVLAPolicy:
         )
 
         logger.info(
-            "[JOINT-VLA] episode=%s ref=%d/%d match=%.6f hand=%s done=%s",
+            "[JOINT-VLA] episode=%s ref=%d target=%d/%d match=%.6f hand=%s done=%s",
             episode_id,
             aligned.reference_index,
+            aligned.action_reference_index,
             self.num_frames,
             aligned.match_distance,
             hand_type,
@@ -126,13 +127,15 @@ class JointVLAPolicy:
             "done": aligned.done,
             "prediction": {
                 "reference_index": aligned.reference_index,
+                "action_reference_index": aligned.action_reference_index,
                 "reference_frames": self.num_frames,
                 "match_distance": round(aligned.match_distance, 7),
                 "hand_event_id": aligned.hand_event_id,
+                "lookahead_frames": self.trajectory.lookahead_frames,
                 "uses_request_step_as_input": False,
             },
             "inference_ms": round((time.perf_counter() - started) * 1000.0, 3),
-            "implementation": "dense_arm_reference_with_expert_hand_scheduler",
+            "implementation": "dense_arm_reference_with_event_aware_lookahead",
         }
 
     async def reset(self, episode_id: str | None) -> None:
@@ -160,7 +163,8 @@ class JointVLAPolicy:
             "hand_events_file": str(self.hand_events_path),
             "uses_request_step_as_input": False,
             "target_tolerance_rad": self.trajectory.target_tolerance_rad,
-            "implementation": "dense_arm_reference_with_expert_hand_scheduler",
+            "lookahead_frames": self.trajectory.lookahead_frames,
+            "implementation": "dense_arm_reference_with_event_aware_lookahead",
             "device": "cpu",
             "dtype": "float32",
             "cuda_memory_allocated_mb": 0.0,
