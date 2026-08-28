@@ -1,11 +1,10 @@
-"""Rabo -> 4080 fixed-oracle / future-VLA executable agent."""
+"""Rabo VLA runtime."""
 
-from .controller import RemoteVLAController
+from .controller import VLAController
 
 
 def run() -> None:
-    """Platform entry: connect 4080, then execute the remote closed loop."""
-    RemoteVLAController().run()
+    VLAController().run()
 
 
-__all__ = ["RemoteVLAController", "run"]
+__all__ = ["VLAController", "run"]
