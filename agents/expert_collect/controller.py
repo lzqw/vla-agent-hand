@@ -1,4 +1,4 @@
-"""Collect fixed-scene expert command episodes for the remote 4080 policy."""
+"""Collect fixed-scene expert command episodes for offline development."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ from typing import Any
 
 import cv2
 
-from drivers import RaboDevices, RemoteCommandExecutor, Ros2SensorBackend, load_config
+from drivers import RaboDevices, Ros2SensorBackend, load_config
+from drivers.rabo_remote_command import RemoteCommandExecutor
 from .expert_program import FIXED_NUT_POSES, build_expert_program
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -139,7 +140,6 @@ def collect_one() -> Path:
             "fixed_nut_poses": {k: list(v) for k, v in FIXED_NUT_POSES.items()},
         })
         print(f"[expert] saved {len(rows)} command steps", flush=True)
-        print(f"[expert] 4080-ready: {episode_dir / 'expert_program.json'}", flush=True)
         return episode_dir
     except BaseException as exc:
         if rows:
