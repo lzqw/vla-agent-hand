@@ -115,66 +115,73 @@ def _read_expert_steps(path: Path) -> tuple[list[dict[str, Any]], np.ndarray]:
     return records, np.stack(arms).astype(np.float32, copy=False)
 
 
-def _monotonic_dtw_alignment(query: np.ndarray, reference: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Map each sparse Expert state to a monotonic dense reference index."""
+def _compatible_dense_phases(source_phase: str) -> set[str]:
+    """Return phases in which a sparse command is safe to schedule.
+
+    Dense episodes do not have a separate ``handoff_*_settle`` phase. That wait
+    belongs at the boundary after the right arm has lifted clear and before the
+    left-hand grasp; both adjacent dense phases are therefore valid candidates.
+    Every other command must remain inside its exact semantic phase.
+    """
+
+    if source_phase.startswith("handoff_") and source_phase.endswith("_settle"):
+        object_name = source_phase.split("_", 2)[1]
+        return {
+            f"handoff_{object_name}_right_lift_clear",
+            f"handoff_{object_name}_left_grasp",
+        }
+    return {source_phase}
+
+
+def _phase_constrained_alignment(
+    query: np.ndarray,
+    query_phases: list[str],
+    reference: np.ndarray,
+    reference_phases: list[str],
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Monotonic nearest-arm-state mapping constrained by task phase.
+
+    Phase constraints prevent repeated arm poses in different B/C/A sub-tasks
+    from moving a grasp/release event to the wrong semantic part of the episode.
+    Request step is used only while preparing offline artifacts and never by a
+    runtime policy.
+    """
 
     if query.ndim != 2 or reference.ndim != 2 or query.shape[1] != reference.shape[1]:
         raise ValueError("alignment inputs must be [M,D] and [N,D]")
-    m, n = len(query), len(reference)
+    if len(query_phases) != len(query) or len(reference_phases) != len(reference):
+        raise ValueError("alignment phase labels must match their state arrays")
+
+    dense_phases = np.asarray(reference_phases, dtype=str)
+    frame_indices = np.arange(len(reference), dtype=np.int64)
     scale = np.maximum(np.std(reference, axis=0), np.float32(0.03))
-    normalized = (query[:, None, :] - reference[None, :, :]) / scale[None, None, :]
-    local_cost = np.mean(normalized * normalized, axis=2).astype(np.float64)
+    mapping = np.empty(len(query), dtype=np.int64)
+    rms_rad = np.empty(len(query), dtype=np.float32)
+    selected_phases: list[str] = []
+    previous = 0
 
-    cumulative = np.full((m, n), np.inf, dtype=np.float64)
-    predecessor = np.zeros((m, n), dtype=np.uint8)
-    cumulative[0, 0] = local_cost[0, 0]
-    for j in range(1, n):
-        cumulative[0, j] = cumulative[0, j - 1] + local_cost[0, j]
-        predecessor[0, j] = 2  # left
-    for i in range(1, m):
-        cumulative[i, 0] = cumulative[i - 1, 0] + local_cost[i, 0]
-        predecessor[i, 0] = 1  # up
-    for i in range(1, m):
-        for j in range(1, n):
-            choices = (
-                cumulative[i - 1, j - 1],
-                cumulative[i - 1, j],
-                cumulative[i, j - 1],
+    for index, (state, source_phase) in enumerate(zip(query, query_phases, strict=True)):
+        allowed_phases = _compatible_dense_phases(source_phase)
+        candidates = frame_indices[
+            np.isin(dense_phases, list(allowed_phases)) & (frame_indices >= previous)
+        ]
+        if not len(candidates):
+            raise ValueError(
+                f"no monotonic dense frames for Expert step {index} phase "
+                f"{source_phase!r}; allowed={sorted(allowed_phases)} previous={previous}"
             )
-            move = int(np.argmin(choices))
-            cumulative[i, j] = choices[move] + local_cost[i, j]
-            predecessor[i, j] = move  # diagonal=0, up=1, left=2
+        normalized = (reference[candidates] - state[None, :]) / scale[None, :]
+        distances = np.mean(normalized * normalized, axis=1)
+        selected = int(candidates[int(np.argmin(distances))])
+        mapping[index] = selected
+        delta = reference[selected] - state
+        rms_rad[index] = np.sqrt(np.mean(delta * delta))
+        selected_phases.append(str(dense_phases[selected]))
+        previous = selected
 
-    path: list[tuple[int, int]] = []
-    i, j = m - 1, n - 1
-    while True:
-        path.append((i, j))
-        if i == 0 and j == 0:
-            break
-        move = int(predecessor[i, j])
-        if move == 0:
-            i -= 1
-            j -= 1
-        elif move == 1:
-            i -= 1
-        else:
-            j -= 1
-    path.reverse()
-
-    candidates: list[list[int]] = [[] for _ in range(m)]
-    for query_index, reference_index in path:
-        candidates[query_index].append(reference_index)
-    mapping = np.empty(m, dtype=np.int64)
-    for query_index, indices in enumerate(candidates):
-        mapping[query_index] = min(
-            indices, key=lambda reference_index: local_cost[query_index, reference_index]
-        )
     if np.any(mapping[1:] < mapping[:-1]):
-        raise RuntimeError("internal error: DTW mapping is not monotonic")
-
-    raw_delta = query - reference[mapping]
-    rms_rad = np.sqrt(np.mean(raw_delta * raw_delta, axis=1)).astype(np.float32)
-    return mapping, rms_rad
+        raise RuntimeError("internal error: phase-constrained mapping is not monotonic")
+    return mapping, rms_rad, selected_phases
 
 
 def _hand_events(
@@ -242,8 +249,16 @@ def main() -> None:
     reference_arms = full[:, :ARM_DIM].astype(np.float32, copy=True)
     target_arms = np.concatenate([reference_arms[1:], reference_arms[-1:]], axis=0)
     progress = np.linspace(0.0, 1.0, len(full), dtype=np.float32)
-    mapping, rms_rad = _monotonic_dtw_alignment(expert_arms, reference_arms)
+    expert_phases = [str(record.get("phase", "")) for record in records]
+    mapping, rms_rad, mapped_phases = _phase_constrained_alignment(
+        expert_arms,
+        expert_phases,
+        reference_arms,
+        phases,
+    )
     events = _hand_events(records, mapping, rms_rad)
+    for event in events:
+        event["dense_phase"] = mapped_phases[int(event["expert_step"])]
 
     images = {
         name: _read_video(path, len(full), args.image_width, args.image_height)
@@ -260,6 +275,7 @@ def main() -> None:
         reference_arm_state=reference_arms,
         target_arm_state=target_arms,
         progress=progress,
+        reference_phase=np.asarray(phases, dtype=str),
     )
 
     bc_path = output / "bc_episode_v1.npz"
@@ -279,7 +295,7 @@ def main() -> None:
         "format": "rabo_hand_events_v1",
         "protocol": "rabo_command_v1",
         "reference_frames": len(full),
-        "alignment": "monotonic_dtw_arm_state_14d",
+        "alignment": "phase_constrained_monotonic_nearest_arm_state_14d",
         "expert_records": len(records),
         "event_count": len(events),
         "source_expert_steps": str(expert_steps),

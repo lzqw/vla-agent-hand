@@ -5,7 +5,7 @@ import json
 import numpy as np
 
 from app.policies.arm_hand_reference import ArmHandReference
-from tools.prepare_joint_dataset import _monotonic_dtw_alignment
+from tools.prepare_joint_dataset import _phase_constrained_alignment
 
 
 def _artifacts(tmp_path):
@@ -75,10 +75,14 @@ def test_alignment_is_observation_driven_and_events_fire_once(tmp_path):
     assert trajectory.align("episode-a", reference[0]).hand_command is not None
 
 
-def test_sparse_to_dense_mapping_is_monotonic_and_endpoint_anchored():
+def test_sparse_to_dense_mapping_is_phase_constrained_and_monotonic():
     reference = np.arange(12, dtype=np.float32)[:, None]
     query = reference[[0, 3, 7, 11]]
-    mapping, error = _monotonic_dtw_alignment(query, reference)
+    reference_phases = ["a"] * 4 + ["b"] * 4 + ["c"] * 4
+    query_phases = ["a", "a", "b", "c"]
+    mapping, error, selected_phases = _phase_constrained_alignment(
+        query, query_phases, reference, reference_phases
+    )
     assert mapping.tolist() == [0, 3, 7, 11]
     assert np.all(error == 0.0)
-
+    assert selected_phases == query_phases

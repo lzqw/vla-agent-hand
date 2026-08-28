@@ -40,8 +40,9 @@ python -m tools.prepare_joint_dataset \
 ~/vla_bridge/data/joint/dataset_meta.json
 ```
 
-工具用 59 步 observation 的前 14D arm state 对 850 帧轨迹做单调 DTW
-最近邻对齐，并只把 hand/wait command 写入事件表。训练 target 定义为：
+工具先把 59 步 command 限制在语义相同的 dense phase 内，再使用前 14D
+arm state 做单调最近邻对齐；这样 B/C/A 的相似姿态不会把抓取/释放事件映射到
+错误阶段。工具只把 hand/wait command 写入事件表。训练 target 定义为：
 
 ```text
 target_arm_state[t] = observation.full_state[t+1, :14]
