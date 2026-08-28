@@ -1,10 +1,11 @@
 """Dense arm alignment with robust one-shot O6 hand-event scheduling.
 
 The 4080 policy aligns the live 14D A7 arm state to a successful dense
-trajectory. Arm targets may use a short lookahead, but hand events are gated by
-actual arm convergence: the arm must reach the event pose for consecutive
-control cycles before clench/grasp-force/wait is emitted. Grasp-force events can
-be repeated while the arm is held at the grasp pose.
+trajectory. Arm targets may use a short lookahead, but the alignment cursor is
+never allowed to cross an unfired hand event. Hand events are additionally
+gated by actual arm convergence for consecutive control cycles before
+clench/grasp-force/wait is emitted. Grasp-force events can be repeated while
+the arm is held at the grasp pose.
 """
 
 from __future__ import annotations
@@ -147,6 +148,13 @@ class ArmHandReference:
         self._repeat: dict[str, dict[int, int]] = {}
         self._lock = threading.Lock()
 
+    def _next_pending_event(self, episode_id: str) -> dict[str, Any] | None:
+        fired = self._fired.setdefault(episode_id, set())
+        for event in self.events:
+            if int(event["event_id"]) not in fired:
+                return event
+        return None
+
     def _nearest(self, episode_id: str, current_arm: np.ndarray) -> tuple[int, float]:
         previous = self._cursor.get(episode_id, -1)
         if previous < 0:
@@ -155,6 +163,24 @@ class ArmHandReference:
         else:
             start = max(0, previous - 2)
             end = min(self.num_frames, previous + self.forward_window + 1)
+
+        # Critical monotonic event barrier: trajectory self-intersections can make
+        # a much later frame look closer than the current grasp frame. Never let
+        # nearest-neighbour alignment cross the next unfired hand event. This
+        # avoids the old failure mode ref=93 -> target=64 -> ref=93 oscillation.
+        pending = self._next_pending_event(episode_id)
+        pending_frame = int(pending["frame_index"]) if pending is not None else None
+        if pending_frame is not None and previous < pending_frame:
+            end = min(end, pending_frame + 1)
+
+        if end <= start:
+            # Defensive fallback for a restored/corrupt cursor. Never command a
+            # backwards jump; keep the current monotonic cursor instead.
+            selected = max(0, min(previous, self.num_frames - 1))
+            selected_delta = (self.reference[selected] - current_arm) / self.scale
+            distance = float(np.mean(selected_delta * selected_delta))
+            self._cursor[episode_id] = selected
+            return selected, distance
 
         candidates = self.reference[start:end]
         normalized = (candidates - current_arm[None, :]) / self.scale[None, :]
@@ -167,19 +193,16 @@ class ArmHandReference:
             target_error = float(np.max(np.abs(self.target[previous] - current_arm)))
             if target_error <= self.target_tolerance_rad:
                 selected = max(selected, previous + 1)
+
+        # The cursor itself may approach an unfired event but must not cross it.
+        if pending_frame is not None:
+            selected = min(selected, pending_frame)
         selected = min(selected, self.num_frames - 1)
 
         selected_delta = (self.reference[selected] - current_arm) / self.scale
         distance = float(np.mean(selected_delta * selected_delta))
         self._cursor[episode_id] = selected
         return selected, distance
-
-    def _next_pending_event(self, episode_id: str) -> dict[str, Any] | None:
-        fired = self._fired.setdefault(episode_id, set())
-        for event in self.events:
-            if int(event["event_id"]) not in fired:
-                return event
-        return None
 
     @staticmethod
     def _is_grasp_force(command: dict[str, Any]) -> bool:
@@ -211,9 +234,6 @@ class ArmHandReference:
         settle = self._settle.setdefault(episode_id, {})
         repeats = self._repeat.setdefault(episode_id, {})
 
-        # Do not fire the hand until the real arm has converged to the recorded
-        # event pose. This prevents network latency/lookahead from closing the
-        # fingers before the wrist is actually at the nut.
         if event_error > self.hand_event_tolerance_rad:
             settle[event_id] = 0
             return None, event_id, event_frame, event_error, 0, repeats.get(event_id, 0)
@@ -242,10 +262,14 @@ class ArmHandReference:
         hand_command: dict[str, Any] | None,
         active_event_frame: int | None,
     ) -> int:
-        # If an event is due, keep the arms exactly at its recorded pose while
-        # settling and while repeated grasp-force commands are issued.
-        if active_event_frame is not None and reference_index >= active_event_frame:
-            return active_event_frame
+        # Hold at an active event frame only if it is not behind the monotonic
+        # cursor. A server must never ask the robot to reverse along the dense
+        # trajectory just to recover an old event.
+        if (
+            active_event_frame is not None
+            and reference_index == active_event_frame
+        ):
+            return reference_index
         if hand_command is not None:
             return reference_index
 
@@ -255,7 +279,9 @@ class ArmHandReference:
         )
         pending = self._next_pending_event(episode_id)
         if pending is not None:
-            action_index = min(action_index, int(pending["frame_index"]))
+            pending_frame = int(pending["frame_index"])
+            if pending_frame >= reference_index:
+                action_index = min(action_index, pending_frame)
         return max(reference_index, action_index)
 
     def align(self, episode_id: str, current_arm: np.ndarray) -> AlignmentResult:
@@ -278,6 +304,11 @@ class ArmHandReference:
                 hand_command,
                 event_frame,
             )
+            # Hard invariant: remote arm targets are monotonic in reference time.
+            if action_index < index:
+                raise RuntimeError(
+                    f"non-monotonic arm target: cursor={index}, target={action_index}"
+                )
             fired = self._fired.setdefault(episode_id, set())
             done = bool(index >= self.num_frames - 1 and len(fired) == len(self.events))
             return AlignmentResult(
