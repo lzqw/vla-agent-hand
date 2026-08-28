@@ -93,7 +93,6 @@ class Settings:
     joint_initial_search: int
     joint_forward_window: int
     joint_target_tolerance_rad: float
-    joint_lookahead_frames: int
     bc_joint_model_dir: Path
     bc_model_dir: Path
     bc_shadow_only: bool
@@ -154,7 +153,6 @@ def load_settings() -> Settings:
         joint_initial_search=_positive_int("JOINT_INITIAL_SEARCH", 250),
         joint_forward_window=_positive_int("JOINT_FORWARD_WINDOW", 80),
         joint_target_tolerance_rad=_positive_float("JOINT_TARGET_TOLERANCE_RAD", 0.025),
-        joint_lookahead_frames=_bounded_int("JOINT_LOOKAHEAD_FRAMES", 3, 1, 12),
         bc_joint_model_dir=Path(
             os.getenv(
                 "BC_JOINT_MODEL_DIR",
