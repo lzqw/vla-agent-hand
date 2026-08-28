@@ -1,8 +1,4 @@
-"""Synchronous client for the 4080 VLA bridge.
-
-WebSocket is preferred. In ``auto`` mode, inference falls back to HTTP if the
-WebSocket path fails. Authentication supports bearer/query/hello-token modes.
-"""
+"""Synchronous transport client for the remote VLA policy service."""
 
 from __future__ import annotations
 
@@ -34,7 +30,7 @@ class RemoteVLAClient:
         transport: str = "auto",
         ws_auth_mode: str = "auto",
         timeout_s: float = 5.0,
-        client_name: str = "simulation-web",
+        client_name: str = "rabo-vla-runtime",
     ) -> None:
         self.ws_url = ws_url
         self.http_url = http_url
@@ -46,7 +42,6 @@ class RemoteVLAClient:
         self.client_name = client_name
         self._ws: Any = None
         self._lock = threading.Lock()
-        self._active_ws_auth_mode: str | None = None
 
     @staticmethod
     def load_token(env_value: str, token_file: Path) -> str:
@@ -98,15 +93,11 @@ class RemoteVLAClient:
                     header=headers,
                     sslopt={"cert_reqs": ssl.CERT_REQUIRED},
                 )
-                hello: dict[str, Any] = {
-                    "type": "hello",
-                    "client": self.client_name,
-                }
+                hello: dict[str, Any] = {"type": "hello", "client": self.client_name}
                 if mode == "hello" and self.token:
                     hello["token"] = self.token
                 ws.send(json.dumps(hello, ensure_ascii=False))
                 self._ws = ws
-                self._active_ws_auth_mode = mode
                 return
             except BaseException as exc:
                 last_error = exc
@@ -115,10 +106,9 @@ class RemoteVLAClient:
                         ws.close()
                     except Exception:
                         pass
-        raise RuntimeError(f"Unable to connect to remote WebSocket: {last_error!r}")
+        raise RuntimeError(f"Unable to connect to VLA WebSocket: {last_error!r}")
 
     def connect(self) -> str:
-        """Proactively establish the preferred transport before robot motion."""
         with self._lock:
             if self.transport == "http":
                 return "http"
@@ -135,23 +125,22 @@ class RemoteVLAClient:
 
     def _close_ws(self) -> None:
         ws, self._ws = self._ws, None
-        self._active_ws_auth_mode = None
         if ws is not None:
             try:
                 ws.close()
             except Exception:
                 pass
 
-    def _infer_ws(self, payload: dict[str, Any]) -> RemoteReply:
+    def _infer_ws(self, observation: dict[str, Any]) -> RemoteReply:
         if self._ws is None:
             self._connect_ws()
         assert self._ws is not None
-        request_id = str(payload.get("request_id", ""))
-        self._ws.send(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        request_id = str(observation.get("request_id", ""))
+        self._ws.send(json.dumps(observation, ensure_ascii=False, separators=(",", ":")))
         while True:
             raw = self._ws.recv()
             if raw is None:
-                raise RuntimeError("remote WebSocket closed")
+                raise RuntimeError("VLA WebSocket closed")
             message = json.loads(raw)
             if not isinstance(message, dict):
                 continue
@@ -162,45 +151,41 @@ class RemoteVLAClient:
                 continue
             if kind == "error":
                 raise RuntimeError(
-                    f"remote inference error: {message.get('code')} "
-                    f"{message.get('message')}"
+                    f"VLA inference error: {message.get('code')} {message.get('message')}"
                 )
-            if (
-                kind == "action"
-                or "action" in message
-                or "action_chunk" in message
-                or "command" in message
-            ):
+            if kind == "action" and "action" in message:
                 return RemoteReply(message, "ws")
 
-    def _infer_http(self, payload: dict[str, Any]) -> RemoteReply:
+    def _infer_http(self, observation: dict[str, Any]) -> RemoteReply:
         response = requests.post(
             self.http_url,
-            json=payload,
+            json=observation,
             headers=self._auth_headers(),
             timeout=self.timeout_s,
         )
         response.raise_for_status()
         message = response.json()
         if not isinstance(message, dict):
-            raise RuntimeError("HTTP inference response is not a JSON object")
+            raise RuntimeError("VLA HTTP response is not a JSON object")
         if message.get("type") == "error":
             raise RuntimeError(
-                f"remote inference error: {message.get('code')} {message.get('message')}"
+                f"VLA inference error: {message.get('code')} {message.get('message')}"
             )
+        if message.get("type") != "action" or "action" not in message:
+            raise RuntimeError("VLA HTTP response does not contain an action")
         return RemoteReply(message, "http")
 
-    def infer(self, payload: dict[str, Any]) -> RemoteReply:
+    def infer(self, observation: dict[str, Any]) -> RemoteReply:
         with self._lock:
             if self.transport == "http":
-                return self._infer_http(payload)
+                return self._infer_http(observation)
             try:
-                return self._infer_ws(payload)
+                return self._infer_ws(observation)
             except Exception:
                 self._close_ws()
                 if self.transport == "ws":
                     raise
-                return self._infer_http(payload)
+                return self._infer_http(observation)
 
     def health(self) -> dict[str, Any]:
         response = requests.get(
