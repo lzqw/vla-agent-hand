@@ -1,9 +1,10 @@
-"""Shared dense-arm alignment and one-shot hand-event scheduling.
+"""Dense arm alignment with robust one-shot O6 hand-event scheduling.
 
-The dense reference contains only the two A7 arms as executable numeric
-targets. O6 hand actions remain the original validated SDK commands. The live
-observation is aligned to the recorded arm trajectory, then a short event-aware
-lookahead is used to choose the next arm target without skipping a hand event.
+The 4080 policy aligns the live 14D A7 arm state to a successful dense
+trajectory. Arm targets may use a short lookahead, but hand events are gated by
+actual arm convergence: the arm must reach the event pose for consecutive
+control cycles before clench/grasp-force/wait is emitted. Grasp-force events can
+be repeated while the arm is held at the grasp pose.
 """
 
 from __future__ import annotations
@@ -30,11 +31,15 @@ class AlignmentResult:
     target_arm: np.ndarray
     hand_command: dict[str, Any] | None
     hand_event_id: int | None
+    hand_event_frame: int | None
+    hand_event_error_rad: float | None
+    hand_event_settle_count: int
+    hand_event_repeat_index: int
     done: bool
 
 
 class ArmHandReference:
-    """Align live arm state to a dense trajectory and schedule hand commands."""
+    """Align live arm state to a dense trajectory and safely schedule O6 actions."""
 
     def __init__(
         self,
@@ -43,8 +48,11 @@ class ArmHandReference:
         *,
         initial_search: int = 250,
         forward_window: int = 80,
-        target_tolerance_rad: float = 0.01,
-        lookahead_frames: int = 1,
+        target_tolerance_rad: float = 0.025,
+        lookahead_frames: int = 3,
+        hand_event_tolerance_rad: float = 0.020,
+        hand_event_settle_cycles: int = 2,
+        grasp_force_repeats: int = 2,
     ) -> None:
         self.reference_path = reference_path.expanduser().resolve()
         self.hand_events_path = hand_events_path.expanduser().resolve()
@@ -114,16 +122,29 @@ class ArmHandReference:
         self.num_frames = int(reference.shape[0])
         self.initial_search = max(1, min(int(initial_search), self.num_frames))
         self.forward_window = max(2, int(forward_window))
+
         if not np.isfinite(target_tolerance_rad) or target_tolerance_rad <= 0.0:
             raise ValueError("target_tolerance_rad must be positive and finite")
+        if not np.isfinite(hand_event_tolerance_rad) or hand_event_tolerance_rad <= 0.0:
+            raise ValueError("hand_event_tolerance_rad must be positive and finite")
+        if int(hand_event_settle_cycles) < 1:
+            raise ValueError("hand_event_settle_cycles must be >= 1")
+        if int(grasp_force_repeats) < 1:
+            raise ValueError("grasp_force_repeats must be >= 1")
+
         self.target_tolerance_rad = float(target_tolerance_rad)
         self.lookahead_frames = max(1, int(lookahead_frames))
+        self.hand_event_tolerance_rad = float(hand_event_tolerance_rad)
+        self.hand_event_settle_cycles = int(hand_event_settle_cycles)
+        self.grasp_force_repeats = int(grasp_force_repeats)
         self.scale = np.maximum(np.std(reference, axis=0), np.float32(0.03)).astype(
             np.float32
         )
 
         self._cursor: dict[str, int] = {}
         self._fired: dict[str, set[int]] = {}
+        self._settle: dict[str, dict[int, int]] = {}
+        self._repeat: dict[str, dict[int, int]] = {}
         self._lock = threading.Lock()
 
     def _nearest(self, episode_id: str, current_arm: np.ndarray) -> tuple[int, float]:
@@ -142,9 +163,6 @@ class ArmHandReference:
         matched = start + local
         selected = max(previous, matched)
 
-        # Repeated or near-static frames can have identical matching cost. Once
-        # the live arm reaches the one-step recorded target for the current
-        # cursor, allow the cursor to advance. The request step is never used.
         if previous >= 0 and previous < self.num_frames - 1:
             target_error = float(np.max(np.abs(self.target[previous] - current_arm)))
             if target_error <= self.target_tolerance_rad:
@@ -156,33 +174,78 @@ class ArmHandReference:
         self._cursor[episode_id] = selected
         return selected, distance
 
-    def _next_due_event(
-        self, episode_id: str, reference_index: int
-    ) -> tuple[dict[str, Any] | None, int | None]:
-        fired = self._fired.setdefault(episode_id, set())
-        for event in self.events:
-            event_id = int(event["event_id"])
-            if event_id not in fired and int(event["frame_index"]) <= reference_index:
-                fired.add(event_id)
-                return dict(event["command"]), event_id
-        return None, None
-
-    def _next_pending_event_frame(self, episode_id: str) -> int | None:
+    def _next_pending_event(self, episode_id: str) -> dict[str, Any] | None:
         fired = self._fired.setdefault(episode_id, set())
         for event in self.events:
             if int(event["event_id"]) not in fired:
-                return int(event["frame_index"])
+                return event
         return None
+
+    @staticmethod
+    def _is_grasp_force(command: dict[str, Any]) -> bool:
+        return str(command.get("action_type", "")).endswith("_hand_grasp_force")
+
+    def _process_due_event(
+        self,
+        episode_id: str,
+        reference_index: int,
+        current_arm: np.ndarray,
+    ) -> tuple[
+        dict[str, Any] | None,
+        int | None,
+        int | None,
+        float | None,
+        int,
+        int,
+    ]:
+        event = self._next_pending_event(episode_id)
+        if event is None:
+            return None, None, None, None, 0, 0
+
+        event_id = int(event["event_id"])
+        event_frame = int(event["frame_index"])
+        if reference_index < event_frame:
+            return None, event_id, event_frame, None, 0, 0
+
+        event_error = float(np.max(np.abs(self.reference[event_frame] - current_arm)))
+        settle = self._settle.setdefault(episode_id, {})
+        repeats = self._repeat.setdefault(episode_id, {})
+
+        # Do not fire the hand until the real arm has converged to the recorded
+        # event pose. This prevents network latency/lookahead from closing the
+        # fingers before the wrist is actually at the nut.
+        if event_error > self.hand_event_tolerance_rad:
+            settle[event_id] = 0
+            return None, event_id, event_frame, event_error, 0, repeats.get(event_id, 0)
+
+        settle_count = settle.get(event_id, 0) + 1
+        settle[event_id] = settle_count
+        if settle_count < self.hand_event_settle_cycles:
+            return None, event_id, event_frame, event_error, settle_count, repeats.get(event_id, 0)
+
+        command = dict(event["command"])
+        repeat_goal = self.grasp_force_repeats if self._is_grasp_force(command) else 1
+        repeat_index = repeats.get(event_id, 0) + 1
+        repeats[event_id] = repeat_index
+
+        if repeat_index >= repeat_goal:
+            self._fired.setdefault(episode_id, set()).add(event_id)
+            settle.pop(event_id, None)
+            repeats.pop(event_id, None)
+
+        return command, event_id, event_frame, event_error, settle_count, repeat_index
 
     def _action_reference_index(
         self,
         episode_id: str,
         reference_index: int,
         hand_command: dict[str, Any] | None,
+        active_event_frame: int | None,
     ) -> int:
-        # When a hand command is emitted, hold the arms at the aligned reference
-        # frame for that cycle. This prevents a lookahead arm command from moving
-        # through a grasp/release/wait event while the O6 action is being applied.
+        # If an event is due, keep the arms exactly at its recorded pose while
+        # settling and while repeated grasp-force commands are issued.
+        if active_event_frame is not None and reference_index >= active_event_frame:
+            return active_event_frame
         if hand_command is not None:
             return reference_index
 
@@ -190,13 +253,9 @@ class ArmHandReference:
             reference_index + self.lookahead_frames,
             self.num_frames - 1,
         )
-
-        # Never look past the next unfired hand event. The arm may approach the
-        # event frame quickly, but the event itself is still triggered only when
-        # the observation-aligned cursor reaches it.
-        next_event_frame = self._next_pending_event_frame(episode_id)
-        if next_event_frame is not None:
-            action_index = min(action_index, next_event_frame)
+        pending = self._next_pending_event(episode_id)
+        if pending is not None:
+            action_index = min(action_index, int(pending["frame_index"]))
         return max(reference_index, action_index)
 
     def align(self, episode_id: str, current_arm: np.ndarray) -> AlignmentResult:
@@ -205,11 +264,19 @@ class ArmHandReference:
             raise ValueError(f"current arm state must contain {ARM_DIM} finite values")
         with self._lock:
             index, distance = self._nearest(episode_id, current)
-            hand_command, event_id = self._next_due_event(episode_id, index)
+            (
+                hand_command,
+                event_id,
+                event_frame,
+                event_error,
+                settle_count,
+                repeat_index,
+            ) = self._process_due_event(episode_id, index, current)
             action_index = self._action_reference_index(
                 episode_id,
                 index,
                 hand_command,
+                event_frame,
             )
             fired = self._fired.setdefault(episode_id, set())
             done = bool(index >= self.num_frames - 1 and len(fired) == len(self.events))
@@ -220,6 +287,10 @@ class ArmHandReference:
                 target_arm=self.reference[action_index].astype(np.float32, copy=True),
                 hand_command=hand_command,
                 hand_event_id=event_id,
+                hand_event_frame=event_frame,
+                hand_event_error_rad=event_error,
+                hand_event_settle_count=settle_count,
+                hand_event_repeat_index=repeat_index,
                 done=done,
             )
 
@@ -228,6 +299,10 @@ class ArmHandReference:
             if episode_id is None:
                 self._cursor.clear()
                 self._fired.clear()
+                self._settle.clear()
+                self._repeat.clear()
             else:
                 self._cursor.pop(episode_id, None)
                 self._fired.pop(episode_id, None)
+                self._settle.pop(episode_id, None)
+                self._repeat.pop(episode_id, None)
