@@ -93,6 +93,10 @@ class Settings:
     joint_initial_search: int
     joint_forward_window: int
     joint_target_tolerance_rad: float
+    joint_lookahead_frames: int
+    hand_event_tolerance_rad: float
+    hand_event_settle_cycles: int
+    grasp_force_repeats: int
     bc_joint_model_dir: Path
     bc_model_dir: Path
     bc_shadow_only: bool
@@ -153,6 +157,10 @@ def load_settings() -> Settings:
         joint_initial_search=_positive_int("JOINT_INITIAL_SEARCH", 250),
         joint_forward_window=_positive_int("JOINT_FORWARD_WINDOW", 80),
         joint_target_tolerance_rad=_positive_float("JOINT_TARGET_TOLERANCE_RAD", 0.025),
+        joint_lookahead_frames=_bounded_int("JOINT_LOOKAHEAD_FRAMES", 3, 1, 12),
+        hand_event_tolerance_rad=_positive_float("HAND_EVENT_TOLERANCE_RAD", 0.020),
+        hand_event_settle_cycles=_bounded_int("HAND_EVENT_SETTLE_CYCLES", 2, 1, 8),
+        grasp_force_repeats=_bounded_int("GRASP_FORCE_REPEATS", 2, 1, 4),
         bc_joint_model_dir=Path(
             os.getenv(
                 "BC_JOINT_MODEL_DIR",
