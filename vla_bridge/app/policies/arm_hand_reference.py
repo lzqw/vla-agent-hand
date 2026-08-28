@@ -1,8 +1,9 @@
 """Shared dense-arm alignment and one-shot hand-event scheduling.
 
 The dense reference contains only the two A7 arms as executable numeric
-targets.  O6 hand actions remain the original, validated SDK commands recorded
-by the command-level Expert episode.
+targets. O6 hand actions remain the original validated SDK commands. The live
+observation is aligned to the recorded arm trajectory, then a short event-aware
+lookahead is used to choose the next arm target without skipping a hand event.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ FULL_STATE_DIM = 36
 @dataclass(frozen=True)
 class AlignmentResult:
     reference_index: int
+    action_reference_index: int
     match_distance: float
     target_arm: np.ndarray
     hand_command: dict[str, Any] | None
@@ -42,6 +44,7 @@ class ArmHandReference:
         initial_search: int = 250,
         forward_window: int = 80,
         target_tolerance_rad: float = 0.01,
+        lookahead_frames: int = 1,
     ) -> None:
         self.reference_path = reference_path.expanduser().resolve()
         self.hand_events_path = hand_events_path.expanduser().resolve()
@@ -114,6 +117,7 @@ class ArmHandReference:
         if not np.isfinite(target_tolerance_rad) or target_tolerance_rad <= 0.0:
             raise ValueError("target_tolerance_rad must be positive and finite")
         self.target_tolerance_rad = float(target_tolerance_rad)
+        self.lookahead_frames = max(1, int(lookahead_frames))
         self.scale = np.maximum(np.std(reference, axis=0), np.float32(0.03)).astype(
             np.float32
         )
@@ -138,18 +142,15 @@ class ArmHandReference:
         matched = start + local
         selected = max(previous, matched)
 
-        # Repeated/near-static reference frames can have identical matching
-        # cost. Once the live observation has actually reached the target that
-        # was returned for the previous cursor, advance one frame. This is
-        # observation-driven progress and never consults request.step.
+        # Repeated or near-static frames can have identical matching cost. Once
+        # the live arm reaches the one-step recorded target for the current
+        # cursor, allow the cursor to advance. The request step is never used.
         if previous >= 0 and previous < self.num_frames - 1:
             target_error = float(np.max(np.abs(self.target[previous] - current_arm)))
             if target_error <= self.target_tolerance_rad:
                 selected = max(selected, previous + 1)
         selected = min(selected, self.num_frames - 1)
 
-        # Report the distance for the selected frame (which can differ from the
-        # raw nearest frame when the monotonic guard blocks a backwards jump).
         selected_delta = (self.reference[selected] - current_arm) / self.scale
         distance = float(np.mean(selected_delta * selected_delta))
         self._cursor[episode_id] = selected
@@ -166,6 +167,38 @@ class ArmHandReference:
                 return dict(event["command"]), event_id
         return None, None
 
+    def _next_pending_event_frame(self, episode_id: str) -> int | None:
+        fired = self._fired.setdefault(episode_id, set())
+        for event in self.events:
+            if int(event["event_id"]) not in fired:
+                return int(event["frame_index"])
+        return None
+
+    def _action_reference_index(
+        self,
+        episode_id: str,
+        reference_index: int,
+        hand_command: dict[str, Any] | None,
+    ) -> int:
+        # When a hand command is emitted, hold the arms at the aligned reference
+        # frame for that cycle. This prevents a lookahead arm command from moving
+        # through a grasp/release/wait event while the O6 action is being applied.
+        if hand_command is not None:
+            return reference_index
+
+        action_index = min(
+            reference_index + self.lookahead_frames,
+            self.num_frames - 1,
+        )
+
+        # Never look past the next unfired hand event. The arm may approach the
+        # event frame quickly, but the event itself is still triggered only when
+        # the observation-aligned cursor reaches it.
+        next_event_frame = self._next_pending_event_frame(episode_id)
+        if next_event_frame is not None:
+            action_index = min(action_index, next_event_frame)
+        return max(reference_index, action_index)
+
     def align(self, episode_id: str, current_arm: np.ndarray) -> AlignmentResult:
         current = np.asarray(current_arm, dtype=np.float32)
         if current.shape != (ARM_DIM,) or not np.isfinite(current).all():
@@ -173,12 +206,18 @@ class ArmHandReference:
         with self._lock:
             index, distance = self._nearest(episode_id, current)
             hand_command, event_id = self._next_due_event(episode_id, index)
+            action_index = self._action_reference_index(
+                episode_id,
+                index,
+                hand_command,
+            )
             fired = self._fired.setdefault(episode_id, set())
             done = bool(index >= self.num_frames - 1 and len(fired) == len(self.events))
             return AlignmentResult(
                 reference_index=index,
+                action_reference_index=action_index,
                 match_distance=distance,
-                target_arm=self.target[index].astype(np.float32, copy=True),
+                target_arm=self.reference[action_index].astype(np.float32, copy=True),
                 hand_command=hand_command,
                 hand_event_id=event_id,
                 done=done,
