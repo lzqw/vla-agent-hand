@@ -1,4 +1,4 @@
-"""Rabo -> 4080 remote closed-loop controller."""
+"""Closed-loop VLA controller for the Rabo simulation runtime."""
 
 from __future__ import annotations
 
@@ -14,12 +14,10 @@ import cv2
 import numpy as np
 
 from drivers import (
+    HandActionExecutor,
     MockSensorBackend,
     RaboDevices,
-    RemoteCommandExecutor,
     Ros2SensorBackend,
-    VLA_ACTION_SPACE,
-    VLAActionAdapter,
     load_config,
 )
 
@@ -27,7 +25,9 @@ from . import config as runtime
 from .remote_client import RemoteVLAClient
 
 
-class RemoteVLAController:
+class VLAController:
+    """Capture multimodal observations, request actions, and execute them."""
+
     def __init__(self) -> None:
         if not runtime.ROBOT_CONFIG_PATH.is_file():
             raise FileNotFoundError(f"Robot config not found: {runtime.ROBOT_CONFIG_PATH}")
@@ -47,10 +47,10 @@ class RemoteVLAController:
         token = RemoteVLAClient.load_token(runtime.TOKEN_ENV, runtime.TOKEN_FILE)
         if not token:
             raise RuntimeError(
-                "Missing 4080 token. Configure VLA_TOKEN or put the token in "
+                "Missing VLA token. Configure VLA_TOKEN or put the token in "
                 f"{runtime.TOKEN_FILE}."
             )
-        self.remote = RemoteVLAClient(
+        self.policy = RemoteVLAClient(
             ws_url=runtime.WS_URL,
             http_url=runtime.HTTP_URL,
             health_url=runtime.HEALTH_URL,
@@ -58,29 +58,26 @@ class RemoteVLAController:
             transport=runtime.TRANSPORT,
             ws_auth_mode=runtime.WS_AUTH_MODE,
             timeout_s=runtime.NETWORK_TIMEOUT_S,
+            client_name="rabo-vla-runtime",
         )
 
         self.devices: RaboDevices | None = None
-        self.command_executor: RemoteCommandExecutor | None = None
+        self.hand_executor: HandActionExecutor | None = None
         self.sensors: Any | None = None
-        self.action_adapter = VLAActionAdapter()
 
-        self.session_id = uuid.uuid4().hex[:8]
+        self.episode_id = uuid.uuid4().hex[:8]
         self.instruction = runtime.INSTRUCTION or str(self.robot_config.dataset["task"])
-        self.last_action: Any | None = None
-        self.last_command: dict[str, Any] | None = None
-        self.last_execution: dict[str, Any] | None = None
 
     @staticmethod
     def _json(event: str, **values: Any) -> None:
         print(json.dumps({"event": event, **values}, ensure_ascii=False), flush=True)
 
-    def _setup_local_runtime(self) -> None:
+    def _setup_runtime(self) -> None:
         if runtime.SENSOR_BACKEND == "mock":
             self.sensors = MockSensorBackend(self.robot_config)
             return
         self.devices = RaboDevices(self.robot_config, mode=runtime.MODE)
-        self.command_executor = RemoteCommandExecutor(self.devices, trace=True)
+        self.hand_executor = HandActionExecutor(self.devices, trace=True)
         self.sensors = Ros2SensorBackend(
             self.robot_config,
             joint_reader=self.devices.read_full_state,
@@ -108,7 +105,7 @@ class RemoteVLAController:
         height, width = image_bgr.shape[:2]
         return base64.b64encode(encoded.tobytes()).decode("ascii"), width, height
 
-    def _payload(self, snapshot: Any, request_id: str, step: int) -> dict[str, Any]:
+    def _observation(self, snapshot: Any, request_id: str) -> dict[str, Any]:
         images: dict[str, dict[str, Any]] = {}
         for name in self.camera_names:
             data, width, height = self._jpeg_b64(snapshot.images[name])
@@ -120,14 +117,14 @@ class RemoteVLAController:
                 "data": data,
             }
 
-        payload: dict[str, Any] = {
+        return {
             "type": "state",
-            "protocol": runtime.ORACLE_PROTOCOL,
+            "protocol": runtime.PROTOCOL,
             "request_id": request_id,
-            "episode_id": self.session_id,
-            "step": int(step),
+            "episode_id": self.episode_id,
             "instruction": self.instruction,
             "state": np.asarray(snapshot.state, dtype=np.float32).tolist(),
+            "full_state": np.asarray(snapshot.full_state, dtype=np.float32).tolist(),
             "images": images,
             "camera_reused": {
                 name: bool(snapshot.camera_reused.get(name, False))
@@ -138,165 +135,84 @@ class RemoteVLAController:
                 for name in self.camera_names
             },
             "sim_time": float(snapshot.sim_time),
-            "previous_action": self.last_action,
-            "previous_command": self.last_command,
-            "previous_execution": self.last_execution,
         }
-        if runtime.SEND_FULL_STATE:
-            payload["full_state"] = np.asarray(
-                snapshot.full_state, dtype=np.float32
-            ).tolist()
-        return payload
 
     @staticmethod
-    def _remote_action(reply: dict[str, Any]) -> np.ndarray:
+    def _action_vector(reply: dict[str, Any]) -> np.ndarray:
         value = reply.get("action")
-        if value is None:
-            chunk = reply.get("action_chunk")
-            if isinstance(chunk, list) and chunk:
-                value = chunk[0]
-        if value is None:
-            raise RuntimeError("Remote response has no executable action")
         action = np.asarray(value, dtype=np.float32)
-        if action.ndim != 1 or action.size == 0 or not np.isfinite(action).all():
-            raise RuntimeError(f"Invalid remote action shape/value: {action.shape}")
+        if action.shape != (14,) or not np.isfinite(action).all():
+            raise RuntimeError(
+                f"VLA action must contain 14 finite joint targets, got {action.shape}"
+            )
         return action
 
-    def _execute_numeric(
-        self,
-        action: np.ndarray,
-        snapshot: Any,
-        action_space: str | None,
-    ) -> dict[str, Any] | None:
+    def _execute_arm_action(self, action: np.ndarray, snapshot: Any) -> dict[str, Any]:
         if not runtime.EXECUTE_ACTIONS:
-            return {"shadow_numeric": True, "action_dim": int(action.size)}
+            return {"shadow": True, "action_dim": 14}
         if self.devices is None:
-            raise RuntimeError("Cannot actuate numeric action without real Rabo devices")
-
-        if action.shape == (36,):
-            if action_space not in {None, runtime.JOINT_ACTION_SPACE}:
-                raise RuntimeError(
-                    f"36D joint action requires action_space={runtime.JOINT_ACTION_SPACE!r}, "
-                    f"got {action_space!r}"
-                )
-            result = self.devices.command_full_joint_action(
-                action=action,
-                current_full_state=snapshot.full_state,
-                max_arm_step=runtime.MAX_ARM_STEP_RAD,
-                max_hand_step=runtime.MAX_HAND_STEP_RAD,
-            )
-            return {**result, "action_dim": 36, "action_space": runtime.JOINT_ACTION_SPACE}
-
-        current = np.asarray(snapshot.state, dtype=np.float32)
-        if action.shape == (26,):
-            target = action
-            scope = "full"
-        elif action.shape == (14,):
-            # Preferred arm-only joint path. Hands are deliberately untouched;
-            # any grasp/release semantics arrive separately as hand_command and
-            # are executed through the validated clench/grasp_force SDK path.
-            target = current.copy()
-            target[:14] = action
-            scope = "arms"
-        elif action.shape == (7,):
-            if runtime.ACTION_MODE not in {"left7", "right7"}:
-                raise RuntimeError("7D action requires VLA_ACTION_MODE=left7/right7")
-            target = current.copy()
-            if runtime.ACTION_MODE == "left7":
-                target[:7] = action
-            else:
-                target[7:14] = action
-            scope = "arms"
-        else:
-            raise RuntimeError(f"Unsupported executable action shape {action.shape}")
-
-        return self.devices.command_action(
-            action=target,
+            raise RuntimeError("Cannot actuate VLA action without real Rabo devices")
+        return self.devices.command_arm_joint_action(
+            action=action,
             current_full_state=snapshot.full_state,
-            scope=scope,
             max_arm_step=runtime.MAX_ARM_STEP_RAD,
-            max_hand_step=runtime.MAX_HAND_STEP_RAD,
         )
 
-    def _execute_structured_command(self, command: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
-        self.last_command = command
-        if str(command.get("action_type")) == "done":
-            self.last_execution = {"done": True}
-            return True, self.last_execution
-        if not runtime.EXECUTE_REMOTE_COMMANDS:
-            self.last_execution = {"shadow": True}
-            return False, self.last_execution
-        if self.command_executor is None:
-            raise RuntimeError("Cannot execute remote action with mock backend")
+    def _execute_hand_action(self, hand_action: Any) -> dict[str, Any] | None:
+        if hand_action is None:
+            return None
+        if not isinstance(hand_action, dict):
+            raise RuntimeError("hand_command must be an object when present")
+        if not runtime.EXECUTE_HAND_ACTIONS:
+            return {"shadow": True, "action_type": hand_action.get("action_type")}
+        if self.hand_executor is None:
+            raise RuntimeError("Cannot actuate hand action without real Rabo devices")
         started = time.perf_counter()
-        result = self.command_executor.execute(command)
+        result = self.hand_executor.execute(hand_action)
         result["elapsed_s"] = round(time.perf_counter() - started, 6)
-        self.last_execution = result
-        return bool(result.get("done", False)), result
+        return result
 
     def _execute_reply(
         self, reply: dict[str, Any], snapshot: Any, request_id: str
-    ) -> tuple[bool, dict[str, Any] | None]:
-        reply_request_id = reply.get("request_id")
-        if reply_request_id not in {None, request_id}:
+    ) -> tuple[bool, dict[str, Any]]:
+        if reply.get("type") not in {None, "action"}:
+            raise RuntimeError(f"Unexpected VLA response type: {reply.get('type')!r}")
+        if reply.get("request_id") not in {None, request_id}:
             raise RuntimeError(
-                f"4080 request_id mismatch: expected {request_id!r}, got {reply_request_id!r}"
+                f"VLA request_id mismatch: expected {request_id!r}, "
+                f"got {reply.get('request_id')!r}"
+            )
+        if reply.get("protocol") not in {None, runtime.PROTOCOL}:
+            raise RuntimeError(f"Unexpected VLA protocol: {reply.get('protocol')!r}")
+        if reply.get("action_space") != runtime.ACTION_SPACE:
+            raise RuntimeError(
+                f"Expected action_space={runtime.ACTION_SPACE!r}, "
+                f"got {reply.get('action_space')!r}"
             )
 
-        protocol = reply.get("protocol")
-        if protocol not in {None, runtime.ORACLE_PROTOCOL}:
-            raise RuntimeError(f"Unexpected remote action protocol: {protocol!r}")
+        action = self._action_vector(reply)
+        arm_result = self._execute_arm_action(action, snapshot)
+        hand_action = reply.get("hand_command")
+        hand_result = self._execute_hand_action(hand_action)
 
-        action_value = reply.get("action")
-        if isinstance(action_value, dict):
-            action_space = reply.get("action_space")
-            if action_space not in {None, VLA_ACTION_SPACE}:
-                raise RuntimeError(f"Unexpected VLA action_space: {action_space!r}")
-            self.last_action = action_value
-            command = self.action_adapter.to_command(action_value, action_space)
-            return self._execute_structured_command(command)
-
-        command = reply.get("command")
-        if isinstance(command, dict):
-            self.last_action = None
-            return self._execute_structured_command(command)
-
-        action = self._remote_action(reply)
-        action_space = reply.get("action_space")
-        self.last_action = action.tolist()
-        numeric_result = self._execute_numeric(action, snapshot, action_space) or {}
-
-        # New arm-joint + original-hand protocol. The arm action is a genuine
-        # numeric policy output while hand grasp/release stays on the validated
-        # clench/grasp_force semantics. This intentionally avoids move_joints on
-        # the O6 hands, which can lose contact force in the handoff task.
-        hand_command = reply.get("hand_command")
-        hand_done = False
-        hand_result: dict[str, Any] | None = None
-        if isinstance(hand_command, dict):
-            hand_done, hand_result = self._execute_structured_command(hand_command)
-
-        result: dict[str, Any] = {"arm": numeric_result}
+        execution: dict[str, Any] = {"arm": arm_result}
         if hand_result is not None:
-            result["hand"] = hand_result
-        self.last_execution = result
-        return bool(reply.get("done", False) or hand_done), result
+            execution["hand"] = hand_result
+        return bool(reply.get("done", False)), execution
 
     @staticmethod
-    def _reply_kind(reply: dict[str, Any]) -> tuple[str, str | None]:
-        action = reply.get("action")
-        if isinstance(action, dict):
-            return "vla_action", str(action.get("type", "unknown"))
-        if isinstance(action, list):
-            if len(action) == 14:
-                return "joint_action", "arm_joint_position_14d"
-            if len(action) == 36:
-                return "joint_action", "joint_position_36d"
-            return "numeric_action", f"numeric_{len(action)}d"
-        command = reply.get("command")
-        if isinstance(command, dict):
-            return "legacy_command", str(command.get("action_type", "unknown"))
-        return "numeric_action", None
+    def _validate_policy_health(health: dict[str, Any]) -> None:
+        if health.get("status") != "ok" or not bool(health.get("model_loaded", False)):
+            raise RuntimeError(f"VLA policy is not ready: {health}")
+        if health.get("action_space") != runtime.ACTION_SPACE:
+            raise RuntimeError(
+                f"VLA action space mismatch: expected {runtime.ACTION_SPACE!r}, "
+                f"got {health.get('action_space')!r}"
+            )
+        if int(health.get("output_action_dim", -1)) != 14:
+            raise RuntimeError(
+                f"VLA output_action_dim must be 14, got {health.get('output_action_dim')!r}"
+            )
 
     def run(self) -> None:
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -306,40 +222,41 @@ class RemoteVLAController:
                 pass
 
         self._json(
-            "vla_agent_startup",
-            ws_url=runtime.WS_URL,
-            http_url=runtime.HTTP_URL,
-            health_url=runtime.HEALTH_URL,
+            "vla_startup",
             transport=runtime.TRANSPORT,
-            execute_commands=runtime.EXECUTE_REMOTE_COMMANDS,
-            execute_numeric=runtime.EXECUTE_ACTIONS,
-            joint_action_space=runtime.JOINT_ACTION_SPACE,
-            reset_fixed_scene=runtime.RESET_FIXED_SCENE,
-            local_preposition=runtime.LOCAL_PREPOSITION,
+            action_space=runtime.ACTION_SPACE,
+            execute_actions=runtime.EXECUTE_ACTIONS,
+            execute_hand_actions=runtime.EXECUTE_HAND_ACTIONS,
             cameras=list(self.camera_names),
         )
 
         dt = 1.0 / runtime.CONTROL_HZ
-        step = 0
+        cycle = 0
         try:
-            health = self.remote.health()
-            self._json("remote_health_ok", health=health)
-            active_transport = self.remote.connect()
-            self._json("remote_transport_ready", transport=active_transport)
+            health = self.policy.health()
+            self._validate_policy_health(health)
+            self._json(
+                "vla_ready",
+                model=health.get("model"),
+                action_space=health.get("action_space"),
+                output_action_dim=health.get("output_action_dim"),
+            )
+            active_transport = self.policy.connect()
+            self._json("policy_transport_ready", transport=active_transport)
 
-            self._setup_local_runtime()
+            self._setup_runtime()
             assert self.sensors is not None
             self.sensors.start()
             self.sensors.wait_ready(runtime.READY_TIMEOUT_S)
             self._json("sensors_ready")
 
-            if self.devices is not None and (runtime.EXECUTE_ACTIONS or runtime.EXECUTE_REMOTE_COMMANDS):
+            if self.devices is not None and (
+                runtime.EXECUTE_ACTIONS or runtime.EXECUTE_HAND_ACTIONS
+            ):
                 if runtime.RESET_FIXED_SCENE:
-                    self._json("fixed_scene_reset_start")
                     self.devices.reset_fixed_scene()
-                    self._json("fixed_scene_reset_done")
+                    self._json("scene_reset_done")
                 if runtime.LOCAL_PREPOSITION:
-                    self._json("pre_position_start")
                     self.devices.pre_position()
                     self._json("pre_position_done")
 
@@ -349,41 +266,38 @@ class RemoteVLAController:
                 if snapshot is None:
                     continue
 
-                request_id = f"{self.session_id}-step-{step}"
-                payload = self._payload(snapshot, request_id, step)
+                request_id = f"{self.episode_id}-{cycle:06d}"
+                observation = self._observation(snapshot, request_id)
                 started = time.perf_counter()
-                remote_reply = self.remote.infer(payload)
+                remote_reply = self.policy.infer(observation)
                 rtt_ms = (time.perf_counter() - started) * 1000.0
-                done, result = self._execute_reply(
+                done, execution = self._execute_reply(
                     remote_reply.payload, snapshot, request_id
                 )
-                response_kind, action_type = self._reply_kind(remote_reply.payload)
+                hand_action = remote_reply.payload.get("hand_command")
 
                 self._json(
-                    "remote_reply",
-                    request_id=request_id,
-                    step=step,
+                    "vla_action",
+                    cycle=cycle,
                     transport=remote_reply.transport,
-                    response_kind=response_kind,
-                    action_type=action_type,
-                    action_space=remote_reply.payload.get("action_space"),
-                    hand_action_type=(remote_reply.payload.get("hand_command") or {}).get("action_type"),
-                    policy=remote_reply.payload.get("policy"),
                     model=remote_reply.payload.get("model"),
-                    backend=remote_reply.payload.get("backend"),
-                    prediction=remote_reply.payload.get("prediction"),
+                    action_space=remote_reply.payload.get("action_space"),
+                    action_dim=14,
+                    hand_action_type=(hand_action or {}).get("action_type")
+                    if isinstance(hand_action, dict)
+                    else None,
                     inference_ms=remote_reply.payload.get("inference_ms"),
                     rtt_ms=round(rtt_ms, 3),
-                    execution=result,
+                    execution=execution,
                     done=done,
                 )
 
                 if done:
-                    self._json("remote_done", step=step)
+                    self._json("episode_done", cycles=cycle + 1)
                     return
-                step += 1
-                if runtime.MAX_CYCLES and step >= runtime.MAX_CYCLES:
-                    self._json("max_cycles_reached", steps=step)
+                cycle += 1
+                if runtime.MAX_CYCLES and cycle >= runtime.MAX_CYCLES:
+                    self._json("max_cycles_reached", cycles=cycle)
                     return
         finally:
             self.stop_event.set()
@@ -392,9 +306,9 @@ class RemoteVLAController:
                     self.sensors.close()
                 except Exception as exc:
                     self._json("sensor_close_warning", error=repr(exc))
-            self.remote.close()
+            self.policy.close()
             if self.devices is not None:
-                if runtime.EXECUTE_ACTIONS or runtime.EXECUTE_REMOTE_COMMANDS:
+                if runtime.EXECUTE_ACTIONS or runtime.EXECUTE_HAND_ACTIONS:
                     self.devices.stop()
                 self.devices.shutdown()
-            self._json("vla_agent_stopped", steps=step)
+            self._json("vla_stopped", cycles=cycle)
