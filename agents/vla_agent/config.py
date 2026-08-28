@@ -33,12 +33,14 @@ STARTUP_DELAY_S = float(os.getenv("VLA_STARTUP_DELAY_S", "1"))
 MAX_CYCLES = int(os.getenv("VLA_MAX_CYCLES", "0"))
 JPEG_QUALITY = int(os.getenv("VLA_JPEG_QUALITY", "80"))
 
-# Pure-joint policies are new and should be observed in shadow mode once before
-# actuation. Set VLA_EXECUTE_ACTIONS=1 after confirming 36D outputs are sane.
-EXECUTE_ACTIONS = os.getenv("VLA_EXECUTE_ACTIONS", "0") == "1"
-EXECUTE_REMOTE_COMMANDS = os.getenv("VLA_EXECUTE_REMOTE_COMMANDS", "0") == "1"
+# Competition/runtime default: execute the remote policy immediately.
+# The preferred action contract is 14D bimanual arm joint position plus optional
+# validated O6 hand commands (clench/grasp_force/wait).  Shadow mode remains
+# available by explicitly setting either execution flag to 0.
+EXECUTE_ACTIONS = os.getenv("VLA_EXECUTE_ACTIONS", "1") == "1"
+EXECUTE_REMOTE_COMMANDS = os.getenv("VLA_EXECUTE_REMOTE_COMMANDS", "1") == "1"
 ACTION_MODE = os.getenv("VLA_ACTION_MODE", "auto").strip().lower()
-JOINT_ACTION_SPACE = os.getenv("VLA_JOINT_ACTION_SPACE", "joint_position_36d")
+JOINT_ACTION_SPACE = os.getenv("VLA_JOINT_ACTION_SPACE", "arm_joint_position_14d")
 MAX_ARM_STEP_RAD = float(os.getenv("VLA_MAX_ARM_STEP_RAD", "0.04"))
 MAX_HAND_STEP_RAD = float(os.getenv("VLA_MAX_HAND_STEP_RAD", "0.08"))
 
