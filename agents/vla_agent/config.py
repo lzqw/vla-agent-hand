@@ -1,4 +1,4 @@
-"""Runtime settings for the Rabo -> remote 4080 VLA bridge."""
+"""Runtime settings for the Rabo VLA client."""
 
 from __future__ import annotations
 
@@ -33,18 +33,12 @@ STARTUP_DELAY_S = float(os.getenv("VLA_STARTUP_DELAY_S", "1"))
 MAX_CYCLES = int(os.getenv("VLA_MAX_CYCLES", "0"))
 JPEG_QUALITY = int(os.getenv("VLA_JPEG_QUALITY", "80"))
 
-# Competition/runtime default: execute the remote policy immediately.
-# The preferred action contract is 14D bimanual arm joint position plus optional
-# validated O6 hand commands (clench/grasp_force/wait).  Shadow mode remains
-# available by explicitly setting either execution flag to 0.
 EXECUTE_ACTIONS = os.getenv("VLA_EXECUTE_ACTIONS", "1") == "1"
-EXECUTE_REMOTE_COMMANDS = os.getenv("VLA_EXECUTE_REMOTE_COMMANDS", "1") == "1"
-ACTION_MODE = os.getenv("VLA_ACTION_MODE", "auto").strip().lower()
-JOINT_ACTION_SPACE = os.getenv("VLA_JOINT_ACTION_SPACE", "arm_joint_position_14d")
+EXECUTE_HAND_ACTIONS = os.getenv("VLA_EXECUTE_HAND_ACTIONS", "1") == "1"
+ACTION_SPACE = os.getenv("VLA_ACTION_SPACE", "arm_joint_position_14d")
+PROTOCOL = os.getenv("VLA_PROTOCOL", "rabo_command_v1")
 MAX_ARM_STEP_RAD = float(os.getenv("VLA_MAX_ARM_STEP_RAD", "0.04"))
-MAX_HAND_STEP_RAD = float(os.getenv("VLA_MAX_HAND_STEP_RAD", "0.08"))
 
-SEND_FULL_STATE = os.getenv("VLA_SEND_FULL_STATE", "1") == "1"
 CAMERA_NAMES = tuple(
     part.strip()
     for part in os.getenv(
@@ -54,6 +48,9 @@ CAMERA_NAMES = tuple(
 )
 INSTRUCTION = os.getenv("VLA_INSTRUCTION", "").strip()
 
+LOCAL_PREPOSITION = os.getenv("VLA_LOCAL_PREPOSITION", "1") == "1"
+RESET_FIXED_SCENE = os.getenv("VLA_RESET_FIXED_SCENE", "1") == "1"
+
 if TRANSPORT not in {"auto", "ws", "http"}:
     raise ValueError("VLA_TRANSPORT must be auto/ws/http")
 if WS_AUTH_MODE not in {"auto", "bearer", "query", "hello", "none"}:
@@ -62,7 +59,5 @@ if CONTROL_HZ <= 0:
     raise ValueError("VLA_CONTROL_HZ must be positive")
 if not 1 <= JPEG_QUALITY <= 100:
     raise ValueError("VLA_JPEG_QUALITY must be in [1,100]")
-
-LOCAL_PREPOSITION = os.getenv("VLA_LOCAL_PREPOSITION", "1") == "1"
-RESET_FIXED_SCENE = os.getenv("VLA_RESET_FIXED_SCENE", "1") == "1"
-ORACLE_PROTOCOL = os.getenv("VLA_ORACLE_PROTOCOL", "rabo_command_v1")
+if ACTION_SPACE != "arm_joint_position_14d":
+    raise ValueError("VLA_ACTION_SPACE must be arm_joint_position_14d")
