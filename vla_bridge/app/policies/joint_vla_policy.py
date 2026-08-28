@@ -1,7 +1,8 @@
-"""Arm-only joint VLA with monotonic event-aware trajectory alignment."""
+"""Arm-only joint VLA with monotonic event barriers and stable target latching."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Mapping, Sequence
@@ -22,7 +23,7 @@ class JointVLAPolicy:
     """Observation-aligned policy returning 14D bimanual arm joint targets."""
 
     name = "joint_vla"
-    model_name = "RaboVLA-Joint-v4"
+    model_name = "RaboVLA-Joint-v5"
     ready = True
     output_action_dim = ARM_DIM
     action_space = ACTION_SPACE
@@ -39,6 +40,8 @@ class JointVLAPolicy:
         hand_event_tolerance_rad: float = 0.020,
         hand_event_settle_cycles: int = 2,
         grasp_force_repeats: int = 2,
+        action_retarget_tolerance_rad: float = 0.030,
+        min_action_interval_s: float = 1.0,
     ) -> None:
         self.trajectory = ArmHandReference(
             reference_path,
@@ -50,10 +53,13 @@ class JointVLAPolicy:
             hand_event_tolerance_rad=hand_event_tolerance_rad,
             hand_event_settle_cycles=hand_event_settle_cycles,
             grasp_force_repeats=grasp_force_repeats,
+            action_retarget_tolerance_rad=action_retarget_tolerance_rad,
         )
         self.reference_path = self.trajectory.reference_path
         self.hand_events_path = self.trajectory.hand_events_path
         self.num_frames = self.trajectory.num_frames
+        self.min_action_interval_s = max(0.0, float(min_action_interval_s))
+        self._last_reply_time: dict[str, float] = {}
 
     @staticmethod
     def _vector(value: Any, name: str, expected: int) -> np.ndarray:
@@ -100,18 +106,36 @@ class JointVLAPolicy:
         self._validate_images(observation.get("images"))
 
         aligned = self.trajectory.align(episode_id, current[:ARM_DIM])
+
+        # If the previous target is still in flight, deliberately slow the
+        # closed-loop command rate. The web side calls A7 move_joints for every
+        # response; without pacing, successive network replies can overlap with
+        # an earlier SDK motion and eventually block the SDK call for >2 s.
+        paced_s = 0.0
+        if aligned.action_target_latched and self.min_action_interval_s > 0.0:
+            last = self._last_reply_time.get(episode_id)
+            if last is not None:
+                elapsed = time.monotonic() - last
+                paced_s = max(0.0, self.min_action_interval_s - elapsed)
+                if paced_s > 0.0:
+                    await asyncio.sleep(paced_s)
+
         hand_type = (
             aligned.hand_command.get("action_type") if aligned.hand_command is not None else None
         )
 
         logger.info(
             "[JOINT-VLA] episode=%s ref=%d target=%d/%d match=%.6f "
-            "event=%s frame=%s err=%s settle=%d repeat=%d hand=%s done=%s",
+            "target_err=%s latched=%s pace=%.3f event=%s frame=%s err=%s "
+            "settle=%d repeat=%d hand=%s done=%s",
             episode_id,
             aligned.reference_index,
             aligned.action_reference_index,
             self.num_frames,
             aligned.match_distance,
+            None if aligned.action_target_error_rad is None else round(aligned.action_target_error_rad, 5),
+            aligned.action_target_latched,
+            paced_s,
             aligned.hand_event_id,
             aligned.hand_event_frame,
             None if aligned.hand_event_error_rad is None else round(aligned.hand_event_error_rad, 5),
@@ -120,7 +144,8 @@ class JointVLAPolicy:
             hand_type,
             aligned.done,
         )
-        return {
+
+        response = {
             "type": "action",
             "protocol": RABO_PROTOCOL,
             "request_id": request_id,
@@ -137,6 +162,13 @@ class JointVLAPolicy:
                 "action_reference_index": aligned.action_reference_index,
                 "reference_frames": self.num_frames,
                 "match_distance": round(aligned.match_distance, 7),
+                "action_target_error_rad": (
+                    None
+                    if aligned.action_target_error_rad is None
+                    else round(aligned.action_target_error_rad, 7)
+                ),
+                "action_target_latched": aligned.action_target_latched,
+                "paced_s": round(paced_s, 4),
                 "hand_event_id": aligned.hand_event_id,
                 "hand_event_frame": aligned.hand_event_frame,
                 "hand_event_error_rad": (
@@ -148,14 +180,21 @@ class JointVLAPolicy:
                 "hand_event_repeat_index": aligned.hand_event_repeat_index,
                 "lookahead_frames": self.trajectory.lookahead_frames,
                 "monotonic_event_barrier": True,
+                "stable_action_latch": True,
                 "uses_request_step_as_input": False,
             },
             "inference_ms": round((time.perf_counter() - started) * 1000.0, 3),
-            "implementation": "dense_arm_reference_with_monotonic_event_barrier",
+            "implementation": "dense_arm_reference_with_stable_action_latch",
         }
+        self._last_reply_time[episode_id] = time.monotonic()
+        return response
 
     async def reset(self, episode_id: str | None) -> None:
         self.trajectory.reset(episode_id)
+        if episode_id is None:
+            self._last_reply_time.clear()
+        else:
+            self._last_reply_time.pop(episode_id, None)
 
     def health(self) -> dict[str, Any]:
         return {
@@ -183,8 +222,11 @@ class JointVLAPolicy:
             "hand_event_tolerance_rad": self.trajectory.hand_event_tolerance_rad,
             "hand_event_settle_cycles": self.trajectory.hand_event_settle_cycles,
             "grasp_force_repeats": self.trajectory.grasp_force_repeats,
+            "action_retarget_tolerance_rad": self.trajectory.action_retarget_tolerance_rad,
+            "min_action_interval_s": self.min_action_interval_s,
             "monotonic_event_barrier": True,
-            "implementation": "dense_arm_reference_with_monotonic_event_barrier",
+            "stable_action_latch": True,
+            "implementation": "dense_arm_reference_with_stable_action_latch",
             "device": "cpu",
             "dtype": "float32",
             "cuda_memory_allocated_mb": 0.0,
