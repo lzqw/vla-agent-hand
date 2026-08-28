@@ -1,4 +1,4 @@
-"""Arm-only joint VLA with dense trajectory alignment and robust O6 events."""
+"""Arm-only joint VLA with monotonic event-aware trajectory alignment."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ class JointVLAPolicy:
     """Observation-aligned policy returning 14D bimanual arm joint targets."""
 
     name = "joint_vla"
-    model_name = "RaboVLA-Joint-v3"
+    model_name = "RaboVLA-Joint-v4"
     ready = True
     output_action_dim = ARM_DIM
     action_space = ACTION_SPACE
@@ -147,10 +147,11 @@ class JointVLAPolicy:
                 "hand_event_settle_count": aligned.hand_event_settle_count,
                 "hand_event_repeat_index": aligned.hand_event_repeat_index,
                 "lookahead_frames": self.trajectory.lookahead_frames,
+                "monotonic_event_barrier": True,
                 "uses_request_step_as_input": False,
             },
             "inference_ms": round((time.perf_counter() - started) * 1000.0, 3),
-            "implementation": "dense_arm_reference_with_converged_hand_events",
+            "implementation": "dense_arm_reference_with_monotonic_event_barrier",
         }
 
     async def reset(self, episode_id: str | None) -> None:
@@ -182,7 +183,8 @@ class JointVLAPolicy:
             "hand_event_tolerance_rad": self.trajectory.hand_event_tolerance_rad,
             "hand_event_settle_cycles": self.trajectory.hand_event_settle_cycles,
             "grasp_force_repeats": self.trajectory.grasp_force_repeats,
-            "implementation": "dense_arm_reference_with_converged_hand_events",
+            "monotonic_event_barrier": True,
+            "implementation": "dense_arm_reference_with_monotonic_event_barrier",
             "device": "cpu",
             "dtype": "float32",
             "cuda_memory_allocated_mb": 0.0,
