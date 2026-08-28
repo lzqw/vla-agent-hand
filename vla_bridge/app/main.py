@@ -123,6 +123,10 @@ async def _load_policy():
             initial_search=settings.joint_initial_search,
             forward_window=settings.joint_forward_window,
             target_tolerance_rad=settings.joint_target_tolerance_rad,
+            lookahead_frames=settings.joint_lookahead_frames,
+            hand_event_tolerance_rad=settings.hand_event_tolerance_rad,
+            hand_event_settle_cycles=settings.hand_event_settle_cycles,
+            grasp_force_repeats=settings.grasp_force_repeats,
         )
     if settings.policy == "bc_joint_vla":
         from .policies.bc_joint_policy import BCJointVLAPolicy
@@ -136,7 +140,6 @@ async def _load_policy():
             target_tolerance_rad=settings.joint_target_tolerance_rad,
         )
     if settings.policy == "bc_vla":
-        # Keep torch/Pillow completely unloaded unless BC is explicitly selected.
         from .policies.bc_vla_policy import BCVLAPolicy
 
         return await asyncio.to_thread(
